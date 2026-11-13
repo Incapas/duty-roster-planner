@@ -1,0 +1,2202 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- POLITIQUE DE SÉCURITÉ DU CONTENU (CSP), appliquée par le navigateur lui-même. -->
+<!--   default-src 'none' ........... tout ce qui n'est pas autorisé ci-après est interdit -->
+<!--                                  (polices, médias, cadres, workers, ressources externes). -->
+<!--   script-src 'unsafe-inline' ... seuls les scripts écrits dans ce fichier s'exécutent ; aucun script externe. -->
+<!--                                  eval() et new Function() restent interdits (pas de 'unsafe-eval'). -->
+<!--   style-src 'unsafe-inline' .... seuls les styles écrits dans ce fichier. -->
+<!--   img-src data: ................ aucune image distante. -->
+<!--   connect-src 'none' ........... aucune connexion réseau possible depuis le script. -->
+<!--   form-action 'none' ........... aucun envoi de formulaire. -->
+<!--   base-uri 'none' .............. l'adresse de base de la page ne peut pas être détournée. -->
+<!-- Point d'attention : 'unsafe-inline' est imposé par l'absence de serveur (pas de nonce possible). -->
+<!-- La CSP ne bloquerait donc pas un script injecté dans la page : la protection contre l'injection -->
+<!-- repose sur l'échappement systématique par esc() (voir le script Interface). -->
+<!-- Une CSP posée par balise meta ne contrôle pas la navigation : le code ne contient ni lien ni redirection. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<!-- ===================================================================================== -->
+<!-- PERMANENCES DU WEEK-END : guide de lecture pour un audit technique -->
+<!-- ===================================================================================== -->
+<!-- NATURE -->
+<!--   Page HTML autonome. Aucun serveur, aucune dépendance externe, aucune requête réseau. -->
+<!--   Elle lit et écrit deux fichiers dans un dossier choisi par l'utilisateur (API File System Access). -->
+<!--  -->
+<!-- STRUCTURE DU FICHIER -->
+<!--   1. head : politique de sécurité (CSP), script de thème, feuille de style. -->
+<!--   2. body : deux conteneurs vides (#app et #zone-impression), remplis par le script. -->
+<!--   3. Script « Core », entre les repères CORE-DEBUT et CORE-FIN : logique métier pure, sans accès à l'écran. -->
+<!--   4. Script « Interface » : état, rendu, événements, accès au dossier, impression. -->
+<!--  -->
+<!-- FLUX DE DONNÉES -->
+<!--   Entrées : permanences-donnees.json et permanences.log (dossier choisi) ; saisies de l'utilisateur. -->
+<!--   Sorties : ces deux mêmes fichiers ; impression ; téléchargement local d'une sauvegarde JSON. -->
+<!--   Aucune autre sortie : ni fetch, ni XMLHttpRequest, ni WebSocket, ni formulaire, ni lien, -->
+<!--   ni balise chargeant une ressource (img, iframe, link, script src). -->
+<!--  -->
+<!-- STOCKAGE SUR LE POSTE -->
+<!--   IndexedDB : le lien vers le dossier. localStorage : trois préférences d'affichage. -->
+<!--   Aucune donnée de planning n'est conservée sur le poste. -->
+<!--  -->
+<!-- POINTS DE CONTRÔLE -->
+<!--   CSP ............................ balise meta ci-dessus. -->
+<!--   Échappement HTML ............... fonction esc() ; toute donnée lue ou saisie y passe avant innerHTML. -->
+<!--   Validation des données lues .... Core.normalize(). -->
+<!--   Écritures concurrentes ......... Core.Store. -->
+<!--   Accès aux fichiers ............. fileIo(), openFolder(), connect(). -->
+<!--   Journal ........................ Core.logLine(), appendToLog(). -->
+<!--  -->
+<!-- LIMITES ASSUMÉES -->
+<!--   Pas d'authentification : l'interrupteur « Administration » est un filtre d'affichage. -->
+<!--   Pas d'identité : chacun choisit son nom dans une liste ; le journal n'enregistre que le rôle. -->
+<!--   Pas de chiffrement : les deux fichiers sont en clair. -->
+<!--   Le contrôle d'accès est celui du dossier partagé (droits Windows). -->
+<!--  -->
+<!-- CONVENTION -->
+<!--   Les commentaires d'audit sont des lignes entières. Ils ne modifient aucune instruction. -->
+<!-- ===================================================================================== -->
+<title>Permanences du week-end</title>
+<!-- SCRIPT 1 / 3 : thème. Lit une seule clé de localStorage (permanences.theme) et pose l'attribut -->
+<!-- data-theme sur la balise html. Aucune donnée métier. Placé ici pour agir avant le premier affichage. -->
+<script>/* Thème choisi (clair / sombre), appliqué avant l’affichage pour éviter un flash */try{const t=JSON.parse(localStorage.getItem('permanences.theme'));if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+<!-- FEUILLE DE STYLE. Entièrement locale : ni url(), ni @import, ni police distante. -->
+<!-- Les couleurs sont des variables définies sur :root, redéfinies pour le thème sombre. -->
+<!-- Le bloc « @media print » en fin de feuille règle l'impression et l'export PDF. -->
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#f3f4f7; --surface:#ffffff; --surface-2:#f7f8fa; --surface-3:#eef0f4;
+  --text:#1b1f2a; --muted:#5f6878; --faint:#8a92a3; --border:#e3e6ec; --border-strong:#cdd2db;
+  --accent:#0f6cbd; --accent-hover:#0b5aa0; --on-accent:#ffffff; --accent-soft:#e7f0fa; --accent-text:#0d5fa8;
+  --danger:#c42b1c; --danger-soft:#fdeceb; --ok:#107c41; --ok-soft:#e4f3ea; --warn:#8f5600; --warn-soft:#fff3d1;
+  --holiday:#7a3db8; --holiday-soft:#f2eafb;
+  --shadow-sm:0 1px 2px rgba(17,24,39,.05),0 1px 3px rgba(17,24,39,.06);
+  --shadow-md:0 6px 18px rgba(17,24,39,.08),0 1px 3px rgba(17,24,39,.06);
+  --r-sm:6px; --r:10px; --r-lg:14px;
+  --av-s:62%; --av-bg:91%; --av-fg:30%;
+}
+/* Thème : automatique (réglage de Windows), ou forcé clair / sombre via data-theme sur <html>. */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#131519; --surface:#1c1f26; --surface-2:#22262e; --surface-3:#2a2e37;
+    --text:#e8eaef; --muted:#a2aab9; --faint:#7d8596; --border:#2e323c; --border-strong:#434956;
+    --accent:#479ef5; --accent-hover:#65aef6; --on-accent:#081726; --accent-soft:rgba(71,158,245,.15); --accent-text:#7ebbf7;
+    --danger:#ff8f80; --danger-soft:rgba(255,110,92,.14); --ok:#6dd197; --ok-soft:rgba(109,209,151,.13); --warn:#f0c35a; --warn-soft:rgba(240,195,90,.13);
+    --holiday:#caa3f5; --holiday-soft:rgba(202,163,245,.14);
+    --shadow-sm:0 1px 2px rgba(0,0,0,.35); --shadow-md:0 8px 22px rgba(0,0,0,.4);
+    --av-s:38%; --av-bg:27%; --av-fg:85%;
+  }
+}
+:root[data-theme="light"]{color-scheme:light}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#131519; --surface:#1c1f26; --surface-2:#22262e; --surface-3:#2a2e37;
+  --text:#e8eaef; --muted:#a2aab9; --faint:#7d8596; --border:#2e323c; --border-strong:#434956;
+  --accent:#479ef5; --accent-hover:#65aef6; --on-accent:#081726; --accent-soft:rgba(71,158,245,.15); --accent-text:#7ebbf7;
+  --danger:#ff8f80; --danger-soft:rgba(255,110,92,.14); --ok:#6dd197; --ok-soft:rgba(109,209,151,.13); --warn:#f0c35a; --warn-soft:rgba(240,195,90,.13);
+  --holiday:#caa3f5; --holiday-soft:rgba(202,163,245,.14);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35); --shadow-md:0 8px 22px rgba(0,0,0,.4);
+  --av-s:38%; --av-bg:27%; --av-fg:85%;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 "Segoe UI Variable Text","Segoe UI Variable","Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+h1,h2,h3{font-family:"Segoe UI Variable Display","Segoe UI Variable","Segoe UI",system-ui,sans-serif;letter-spacing:-.01em}
+h1{font-size:1.2rem;margin:0;font-weight:650;line-height:1.25}
+h2{font-size:1.25rem;margin:0;font-weight:650}
+h3{font-size:.8rem;margin:1.6rem 0 .6rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:650}
+p{margin:.35rem 0}
+code{background:var(--surface-3);padding:.08rem .35rem;border-radius:4px;font-size:.88em}
+.ico{width:18px;height:18px;flex:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.container{max-width:1120px;margin:0 auto;padding:0 16px 48px}
+.help{color:var(--muted);font-size:.9rem}
+.print-only{display:none}
+
+/* Barre du haut */
+.bar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--surface) 88%,transparent);backdrop-filter:saturate(1.6) blur(14px);-webkit-backdrop-filter:saturate(1.6) blur(14px);border-bottom:1px solid var(--border)}
+.bar-inner{max-width:1120px;margin:0 auto;padding:10px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between}
+.brand{display:flex;gap:12px;align-items:center;min-width:0}
+.logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent) 60%,#7a3db8));color:#fff;display:grid;place-items:center;flex:none;box-shadow:var(--shadow-sm)}
+.logo .ico{width:21px;height:21px}
+.sub-title{color:var(--muted);font-size:.82rem}
+.bar-right{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.switch{display:inline-flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.88rem;font-weight:550;user-select:none;position:relative}
+.switch input{position:absolute;opacity:0;width:1px;height:1px}
+.switch .track{width:38px;height:22px;border-radius:999px;background:var(--border-strong);position:relative;transition:background .15s;flex:none}
+.switch .track::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+.switch input:checked+.track{background:var(--accent)}
+.switch input:checked+.track::after{transform:translateX(16px)}
+.switch input:focus-visible+.track{outline:2px solid var(--accent);outline-offset:2px}
+/* Choix du thème (auto / clair / sombre) */
+.theme-choice{display:inline-flex;gap:2px;padding:3px;background:var(--surface-3);border-radius:9px}
+.theme-choice button{display:inline-grid;place-items:center;width:30px;height:26px;border:0;border-radius:6px;background:none;color:var(--muted);cursor:pointer}
+.theme-choice button:hover{color:var(--text)}
+.theme-choice button[aria-pressed="true"]{background:var(--surface);color:var(--accent);box-shadow:var(--shadow-sm)}
+.theme-choice .ico{width:16px;height:16px}
+.home-theme{display:flex;justify-content:flex-end;margin:-40px 0 16px}
+/* Navigation par année */
+.nav-year{display:inline-flex;align-items:center;gap:4px}
+.nav-year .btn{padding:.38rem .45rem}
+.nav-year select{padding:.36rem .5rem;font-weight:650;font-variant-numeric:tabular-nums}
+.bar-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin:4px 0 4px}
+
+/* Avatars et puces */
+.avatar{--h:210;width:28px;height:28px;border-radius:50%;display:inline-grid;place-items:center;font-size:.72rem;font-weight:700;letter-spacing:.02em;flex:none;background:hsl(var(--h) var(--av-s) var(--av-bg));color:hsl(var(--h) 55% var(--av-fg))}
+.avatar.large{width:36px;height:36px;font-size:.85rem}
+.chip{display:inline-flex;align-items:center;gap:.45rem;font-weight:550;white-space:nowrap}
+.chip .avatar{width:24px;height:24px;font-size:.66rem}
+.chip.alert{color:var(--danger)}
+.chips{display:flex;flex-wrap:wrap;gap:.35rem .9rem}
+
+/* Ligne d'état */
+.state{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem 1rem;font-size:.84rem;color:var(--muted);padding:12px 0 4px}
+.state-file{display:inline-flex;gap:.35rem;align-items:center}
+.state-file .ico{width:15px;height:15px}
+.state-file{flex-wrap:wrap;min-width:0}
+.state-file b{color:var(--text);font-weight:600;overflow-wrap:anywhere}
+.state-file>span{color:var(--faint)}
+.status{display:inline-flex;align-items:center;gap:.4rem}
+.status::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.status:empty::before{display:none}
+/* Ligne d'état : hauteur fixe et texte sur une seule ligne, pour que la page ne bouge pas quand le message change */
+.state>.status{display:block;flex:1 1 12rem;min-width:0;min-height:1.3em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.state>.status::before{display:inline-block;margin-right:.4rem;vertical-align:1px}
+.state>.status:empty::before{display:none}
+.status-ok{color:var(--ok)} .status-ok::before{background:var(--ok)}
+.status-info{color:var(--accent-text)} .status-info::before{background:var(--accent)}
+.status-error{color:var(--danger);font-weight:600} .status-error::before{background:var(--danger)}
+.state-links{display:inline-flex;gap:.9rem;margin-left:auto}
+.link{display:inline-flex;align-items:center;gap:.3rem;background:none;border:0;padding:0;color:var(--accent-text);cursor:pointer;font-size:inherit;font-weight:550}
+.link:hover{text-decoration:underline}
+.link .ico{width:14px;height:14px}
+
+/* Onglets */
+nav.tabs{margin:10px 0 20px;overflow-x:auto;scrollbar-width:none}
+nav.tabs::-webkit-scrollbar{display:none}
+.tabs-inner{display:inline-flex;gap:2px;padding:4px;background:var(--surface-3);border-radius:12px;min-width:max-content}
+.tabs button{display:inline-flex;align-items:center;gap:.45rem;border:0;background:none;padding:.5rem .9rem;border-radius:9px;cursor:pointer;color:var(--muted);font-weight:550;font-size:.92rem;white-space:nowrap}
+.tabs button:hover{color:var(--text)}
+.tabs button[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:var(--shadow-sm)}
+.tabs button[aria-current="page"] .ico{color:var(--accent)}
+.tabs .sep{width:1px;background:var(--border-strong);margin:6px 4px}
+
+/* Cartes, sections */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:20px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
+.card>h2{font-size:1.02rem;margin-bottom:.8rem}
+.head-section{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:10px;margin:4px 0 16px}
+.tools{display:flex;gap:6px;flex-wrap:wrap}
+.state-empty{text-align:center;padding:40px 20px}
+.state-empty .ico{width:40px;height:40px;color:var(--faint);margin-bottom:8px}
+.state-empty b{display:block;font-size:1.05rem;margin-bottom:.2rem}
+
+/* Boutons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.45rem;border:1px solid transparent;padding:.55rem 1rem;border-radius:8px;cursor:pointer;font-weight:600;font-size:.92rem;line-height:1.2;transition:background .12s,border-color .12s,box-shadow .12s}
+.btn .ico{width:17px;height:17px}
+.btn-pri{background:var(--accent);color:var(--on-accent);box-shadow:var(--shadow-sm)}
+.btn-pri:hover{background:var(--accent-hover)}
+.btn-sec{background:var(--surface);border-color:var(--border-strong);color:var(--text)}
+.btn-sec:hover{background:var(--surface-2)}
+.btn-danger{background:var(--surface);border-color:color-mix(in srgb,var(--danger) 45%,var(--border));color:var(--danger)}
+.btn-danger:hover{background:var(--danger-soft)}
+.btn-subtle{background:none;color:var(--muted);padding:.45rem .7rem}
+.btn-subtle:hover{background:var(--surface-3);color:var(--text)}
+.btn-small{padding:.32rem .65rem;font-size:.84rem;font-weight:550}
+.btn-small .ico{width:15px;height:15px}
+.btn:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+
+/* Bandeaux */
+.banner{display:flex;gap:12px;align-items:flex-start;border-radius:var(--r);padding:12px 14px;margin:0 0 16px;border:1px solid;font-size:.92rem}
+.banner>.ico{margin-top:2px}
+.banner.info{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 30%,transparent);color:var(--text)}
+.banner.info>.ico{color:var(--accent)}
+.banner.caution{background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.banner.caution>.ico{color:var(--warn)}
+.banner.error{background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 30%,transparent)}
+.banner.error>.ico{color:var(--danger)}
+
+/* Étiquettes */
+.tag{display:inline-flex;align-items:center;gap:.25rem;font-size:.72rem;line-height:1.3;padding:.12rem .5rem;border-radius:999px;font-weight:650;white-space:nowrap}
+.tag-holiday{background:var(--holiday-soft);color:var(--holiday)}
+.tag-ok{background:var(--ok-soft);color:var(--ok)}
+.tag-danger{background:var(--danger-soft);color:var(--danger)}
+.tag-warn{background:var(--warn-soft);color:var(--warn)}
+.tag-accent{background:var(--accent-soft);color:var(--accent-text)}
+.tag-grey{background:var(--surface-3);color:var(--muted)}
+
+/* Formulaires */
+input[type=text],input[type=number],input[type=date],select,textarea{border:1px solid var(--border-strong);border-radius:8px;padding:.5rem .65rem;background:var(--surface);max-width:100%;transition:border-color .12s,box-shadow .12s}
+input[type=text]:focus,input[type=number]:focus,input[type=date]:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea{width:100%;min-height:7rem;resize:vertical}
+.grid-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0 1.2rem;align-items:end}
+.field{display:flex;flex-direction:column;align-items:stretch;gap:.35rem;margin-bottom:.9rem;min-width:0}
+.field>span{font-weight:600;font-size:.88rem}
+.row-switch{display:flex;gap:.8rem;align-items:center;padding:.8rem 0;border-top:1px solid var(--border);margin-top:.2rem}
+
+/* Saisie */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px 24px;align-items:center}
+.lbl{display:block;font-size:.8rem;font-weight:650;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.35rem}
+#choice-employee{font-size:1.05rem;font-weight:600;width:min(320px,100%);padding:.6rem .8rem;text-overflow:ellipsis}
+/* Compteurs de taille fixe : ne bougent pas quand les chiffres ou les libellés changent */
+.stats{display:grid;grid-template-columns:repeat(3,116px);gap:10px}
+.stat{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;height:72px;min-width:0;display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+.stat-v{font-size:1.5rem;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.stat-l{font-size:.78rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat.danger .stat-v{color:var(--danger)} .stat.ok .stat-v{color:var(--ok)} .stat.accent .stat-v{color:var(--accent-text)}
+.grid-we{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(170px,100%),1fr));gap:10px}
+.tile{position:relative;text-align:left;border:1px solid var(--border);background:var(--surface);border-radius:12px;padding:12px;cursor:pointer;display:flex;flex-direction:column;gap:6px;min-height:104px;box-shadow:var(--shadow-sm);transition:transform .1s,box-shadow .12s,border-color .12s,background .12s}
+.tile:hover{border-color:var(--border-strong);box-shadow:var(--shadow-md);transform:translateY(-1px)}
+.tile-top{display:flex;align-items:flex-start;justify-content:space-between;gap:6px}
+.tile-days{font-size:1.3rem;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.tile-month{display:block;font-size:.78rem;color:var(--muted);font-weight:550}
+.tile-state{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:var(--ok-soft);color:var(--ok);flex:none}
+.tile-state .ico{width:15px;height:15px;stroke-width:2.4}
+.tile-label{font-size:.84rem;font-weight:600;color:var(--ok)}
+.tile{min-width:0}
+.tile-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:auto;min-width:0}
+/* Les étiquettes longues passent à la ligne au lieu de déborder de la carte */
+.tile-tags .tag{white-space:normal;max-width:100%;border-radius:8px;line-height:1.25;overflow-wrap:anywhere}
+.tile-top>span:first-child{min-width:0}
+.tile-month{overflow-wrap:anywhere}
+.tile[aria-pressed="true"]{background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
+.tile[aria-pressed="true"] .tile-state{background:var(--danger);color:var(--surface)}
+.tile[aria-pressed="true"] .tile-label{color:var(--danger)}
+.tile .tag-danger{background:var(--danger);color:var(--surface)}
+.tile:disabled{cursor:default;opacity:.55;box-shadow:none;transform:none}
+
+/* Tableaux */
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)}
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:.9rem}
+th,td{border-bottom:1px solid var(--border);padding:.55rem .7rem;text-align:left;vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+thead th{background:var(--surface-2);font-weight:650;font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);position:sticky;top:0;z-index:1}
+tr.month-row th{background:var(--surface);font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-text);font-weight:700;padding-top:1rem}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+th.center,td.center{text-align:center}
+tbody tr:hover td{background:color-mix(in srgb,var(--surface-2) 70%,transparent)}
+.we-cell{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+.we-label{font-weight:600;white-space:nowrap}
+.avail-badge{display:inline-block;min-width:1.9rem;text-align:center;padding:.1rem .45rem;border-radius:999px;background:var(--surface-3);font-weight:650;font-size:.84rem;font-variant-numeric:tabular-nums}
+.avail-badge.unfilled{background:var(--danger);color:var(--surface)}
+
+/* Vue d'ensemble */
+.view-overview th,.view-overview td{padding:.4rem .35rem}
+.view-overview th.col-we,.view-overview td.col-we{position:sticky;left:0;background:var(--surface);z-index:2;white-space:nowrap;padding-left:.8rem;box-shadow:1px 0 0 var(--border)}
+.view-overview thead th.col-we{background:var(--surface-2);z-index:3;vertical-align:bottom}
+.view-overview tr.month-row th{position:sticky;left:0}
+.view-overview th.col-emp{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;text-align:left;padding:.6rem .3rem;font-size:.8rem;text-transform:none;letter-spacing:0;color:var(--text);font-weight:600}
+.view-overview td.mark{text-align:center;min-width:2.1rem}
+.pt{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;font-weight:700;font-size:.78rem}
+.pt .ico{width:13px;height:13px;stroke-width:2.6}
+.pt-unavailable{background:var(--danger-soft);color:var(--danger)}
+.pt-duty{background:var(--ok);color:var(--surface)}
+.pt-conflict{background:var(--danger);color:var(--surface)}
+.pt-free{width:6px;height:6px;border-radius:50%;background:var(--border-strong)}
+tr.unfilled td.col-we{box-shadow:inset 3px 0 0 var(--danger),1px 0 0 var(--border)}
+.legend{display:flex;flex-wrap:wrap;gap:.5rem 1.2rem;font-size:.84rem;color:var(--muted);margin:.2rem 0 .9rem;align-items:center}
+.legend>span{display:inline-flex;align-items:center;gap:.4rem}
+
+/* Planning */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:14px 16px;box-shadow:var(--shadow-sm);display:flex;flex-direction:column;gap:2px;position:relative;overflow:hidden}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--border-strong)}
+.kpi.ok::before{background:var(--ok)} .kpi.warn::before{background:var(--warn)} .kpi.danger::before{background:var(--danger)} .kpi.accent::before{background:var(--accent)}
+.kpi-l{font-size:.78rem;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.kpi-v{font-size:1.65rem;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
+.kpi-s{font-size:.8rem;color:var(--muted)}
+.schedule td{vertical-align:middle}
+.schedule select{min-width:11rem;margin:2px 0;padding:.35rem .5rem}
+.schedule tr.past td{color:var(--muted)}
+.schedule tr.past .chip{opacity:.7}
+.schedule tr.modified td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+.schedule tr.mine td{background:var(--accent-soft)}
+.schedule tr.unfilled td.avail .avail-badge{background:var(--danger);color:var(--surface)}
+.previous{font-size:.8rem;color:var(--muted);margin-top:3px}
+.previous s{opacity:.85}
+.lock-cb{display:inline-grid;place-items:center;cursor:pointer;color:var(--faint)}
+.lock-cb input{width:1.05rem;height:1.05rem;accent-color:var(--accent);cursor:pointer}
+.lock-cb input:disabled{cursor:not-allowed}
+.alerts{list-style:none;margin:0;padding:0}
+.alerts li{display:flex;gap:.6rem;align-items:flex-start;padding:.5rem 0;border-bottom:1px solid var(--border);font-size:.9rem}
+.alerts li:last-child{border-bottom:0}
+.alerts li .ico{width:16px;height:16px;margin-top:2px}
+.alerts li.unavailable .ico,.alerts li.unfilled .ico,.alerts li.duplicate .ico{color:var(--danger)}
+.alerts li.consecutive .ico{color:var(--warn)}
+.ok-row{display:flex;gap:.5rem;align-items:center;color:var(--ok);font-weight:600}
+.col-bar{width:38%;min-width:140px}
+.bar-load{position:relative;height:10px;border-radius:999px;background:var(--surface-3)}
+.bar-load .filled{position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:var(--accent)}
+.bar-load .filled.max{background:var(--danger)}
+.bar-load .filled.min{background:var(--ok)}
+.bar-load .average{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--text);opacity:.45;border-radius:1px}
+
+/* Agents */
+.list-agents{list-style:none;margin:0;padding:0}
+.list-agents li{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;padding:.65rem 0;border-bottom:1px solid var(--border)}
+.list-agents li:last-child{border-bottom:0}
+.list-agents input{flex:1 1 12rem;font-weight:550}
+.list-agents .count{color:var(--muted);font-size:.84rem;min-width:8rem}
+
+
+/* Accueil */
+.home{max-width:880px;margin:0 auto;padding:56px 16px}
+.home-head{text-align:center;margin-bottom:28px}
+.home-head .logo{width:56px;height:56px;border-radius:16px;margin:0 auto 14px}
+.home-head .logo .ico{width:30px;height:30px}
+.home-head h1{font-size:1.7rem}
+.home-head p{color:var(--muted);max-width:620px;margin:.5rem auto 0}
+.choice{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px}
+.choice .card{display:flex;flex-direction:column;gap:.6rem;margin:0;padding:24px}
+.choice .card .btn{margin-top:auto;align-self:flex-start}
+.choice-ico{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)}
+.choice-ico .ico{width:22px;height:22px}
+.choice .card h2{font-size:1.1rem}
+.choice.single{grid-template-columns:minmax(0,480px);justify-content:center}
+.tip{display:flex;gap:.5rem;align-items:flex-start;font-size:.86rem;color:var(--muted);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r);padding:.6rem .75rem}
+.tip .ico{width:16px;height:16px;color:var(--accent);margin-top:2px}
+
+@media (max-width:640px){
+  .card{padding:16px}
+  .hero{grid-template-columns:1fr}
+  .stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .grid-we{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .schedule select{min-width:0;width:100%}
+  .state-links{margin-left:0}
+  .sub-title{font-size:.78rem}
+  .col-bar{min-width:90px}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .kpi{padding:10px 12px}
+  .kpi-v{font-size:1.3rem}
+}
+/* Fiche individuelle exportée depuis « Mes indisponibilités » (visible uniquement à l'impression) */
+#print-area{display:none}
+.sheet{font-size:9.5pt;color:#1b1f2a;break-after:page}
+.sheet:last-child{break-after:auto}
+.sheet-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12pt;border-bottom:2pt solid #0f6cbd;padding-bottom:6pt;margin-bottom:8pt}
+.sheet-kicker{font-size:8.5pt;color:#5f6878;text-transform:uppercase;letter-spacing:.06em;font-weight:650}
+.sheet-head h1{font-size:19pt;margin:2pt 0 1pt;line-height:1.15}
+.sheet-scope{font-size:10pt;color:#3a4150}
+.sheet-date{text-align:right;font-size:8.5pt;color:#5f6878;white-space:nowrap}
+.sheet-date b{display:block;font-size:10.5pt;color:#1b1f2a}
+.sheet-stats{display:flex;flex-wrap:wrap;gap:6pt;margin:0 0 6pt}
+.sheet-stats span{border:1px solid #d5d9e0;border-radius:6pt;padding:3pt 8pt;font-size:9pt}
+.sheet-stats b{font-size:12pt;margin-right:3pt}
+.sheet-legend{display:flex;flex-wrap:wrap;gap:4pt 12pt;font-size:8pt;color:#5f6878;margin:0 0 8pt}
+.sheet-legend i{display:inline-block;width:9pt;height:9pt;border-radius:2pt;vertical-align:-1pt;margin-right:3pt}
+.sheet-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7pt 8pt}
+.sheet-month{break-inside:avoid;border:1px solid #d5d9e0;border-radius:6pt;padding:5pt 6pt}
+.sheet-month h3{margin:0 0 4pt;font-size:8.5pt;text-transform:uppercase;letter-spacing:.05em;color:#0f6cbd}
+.sheet-month ul{list-style:none;margin:0;padding:0}
+.sheet-month li{display:flex;flex-wrap:wrap;align-items:center;gap:1pt 5pt;padding:2.5pt 5pt;border-radius:4pt;margin-bottom:2pt;background:#e6f4ec;border-left:3pt solid #107c41}
+.sheet-month li.unav{background:#fde4e1;border-left-color:#c42b1c}
+.sheet-month li.past{opacity:.6}
+.sheet-month .sheet-days{font-weight:700;min-width:4.2em;font-variant-numeric:tabular-nums}
+.sheet-month .sheet-state{font-size:8pt;flex:1}
+.sheet-month .sheet-duty{font-size:7.5pt;font-weight:700;background:#0f6cbd;color:#fff;border-radius:3pt;padding:0 4pt}
+.sheet-month .sheet-holidays{font-size:7.5pt;color:#6f3aa6;width:100%}
+.sheet-foot{margin-top:8pt;padding-top:4pt;border-top:1px solid #d5d9e0;font-size:8pt;color:#5f6878;display:flex;justify-content:space-between}
+
+@media print{
+  :root,:root[data-theme]{color-scheme:light;--bg:#fff;--surface:#fff;--surface-2:#f4f5f7;--surface-3:#eceef2;--text:#1b1f2a;--muted:#4a5160;--faint:#7a8292;--border:#d5d9e0;--border-strong:#a9b0bc;--accent:#0f6cbd;--accent-text:#0f6cbd;--accent-soft:#eef4fb;--danger:#b42318;--danger-soft:#fdeceb;--ok:#107c41;--ok-soft:#e4f3ea;--warn:#8f5600;--warn-soft:#fff3d1;--holiday:#6f3aa6;--holiday-soft:#f1e8fa;--shadow-sm:none;--shadow-md:none;--av-s:50%;--av-bg:92%;--av-fg:30%}
+  @page{size:A4 portrait;margin:12mm 11mm 14mm;
+    @bottom-right{content:"Page " counter(page) " / " counter(pages);font:8pt "Segoe UI",sans-serif;color:#6b7280}}
+  @page landscape{size:A4 landscape;margin:10mm 10mm 12mm}
+  main.landscape{page:landscape}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{background:#fff;font-size:9.5pt}
+  .no-print,nav.tabs,.state,.actions,.banner,.bar-right,.tools,.nav-year,.card.alerts-card{display:none!important}
+  .print-only{display:block}
+  .container{max-width:none;padding:0}
+  /* En-tête : titre, période, portée et date d'édition */
+  .bar{position:static;backdrop-filter:none;-webkit-backdrop-filter:none;background:none;border:0;border-bottom:2pt solid #0f6cbd;margin-bottom:8pt}
+  .bar-inner{padding:0 0 5pt;max-width:none}
+  .logo{width:26px;height:26px;border-radius:7px}
+  .logo .ico{width:15px;height:15px}
+  h1{font-size:15pt}
+  .sub-title{font-size:9pt;color:#3a4150}
+  .print-meta{display:flex!important;justify-content:space-between;font-size:8.5pt;color:#4a5160;margin:-4pt 0 8pt}
+  .head-section{margin:0 0 6pt}
+  .head-section h2{font-size:12pt}
+  .head-section .help{font-size:8.5pt}
+  /* Cartes à plat */
+  .card{border:0;padding:0;margin:0 0 10pt;box-shadow:none;background:none}
+  .card>h2{font-size:11pt;margin:0 0 4pt;padding-bottom:2pt;border-bottom:1px solid #d5d9e0}
+  .kpis{grid-template-columns:repeat(4,1fr);gap:6pt;margin-bottom:8pt}
+  .kpi{border:1px solid #d5d9e0;padding:5pt 8pt;box-shadow:none;break-inside:avoid}
+  .kpi-l{font-size:7pt}
+  .kpi-v{font-size:13pt}
+  .kpi-s{font-size:7.5pt}
+  /* Tableaux */
+  .scroll{overflow:visible;border:0;border-radius:0;background:none}
+  table{font-size:9pt;border:1px solid #c9ced8}
+  thead{display:table-header-group}
+  thead th,.view-overview th.col-we,.view-overview td.col-we{position:static;box-shadow:none}
+  thead th{background:#eef1f5;color:#3a4150;font-size:7.5pt;border-bottom:1px solid #a9b0bc}
+  th,td{padding:2.5pt 5pt;border-bottom:1px solid #e2e5ea}
+  tr{break-inside:avoid}
+  tr.month-row th{background:#eef4fb;color:#0f6cbd;padding:3pt 5pt;border-top:1px solid #c9ced8;font-size:8pt;break-after:avoid}
+  tbody tr:hover td{background:none}
+  .schedule tr.mine td{background:none}
+  .schedule tr.past td{color:#4a5160}
+  .schedule tr.modified td:first-child{box-shadow:none}
+  .schedule select{border:0;appearance:none;-webkit-appearance:none;padding:0;background:none;min-width:0;font-weight:550}
+  .chip .avatar{width:15px;height:15px;font-size:6.5pt}
+  .chips{gap:2pt 8pt}
+  .tag{font-size:7pt;padding:0 4pt}
+  .avail-badge{font-size:8pt;padding:0 4pt;min-width:0;background:none}
+  .avail-badge.unfilled,.schedule tr.unfilled td.avail .avail-badge{background:none;color:#b42318;font-weight:800}
+  .previous{font-size:7.5pt}
+  .bar-load{height:7px;border:1px solid #c9ced8}
+  .bar-load .average{top:-3px;bottom:-3px}
+  .card.load-card{break-inside:avoid}
+  /* Vue d'ensemble en paysage */
+  .view-overview{font-size:8pt}
+  .view-overview th,.view-overview td{padding:1.5pt 2pt}
+  .view-overview th.col-emp{font-size:7.5pt;padding:4pt 1pt}
+  .view-overview td.mark{min-width:0}
+  .pt{width:15px;height:15px;border-radius:4px;font-size:7pt}
+  .pt .ico{width:9px;height:9px}
+  .legend{font-size:8pt;margin:0 0 5pt}
+  .legend .avail-badge{border:1px solid #c9ced8}
+  .grid-we{grid-template-columns:repeat(4,1fr)}
+  .tile{min-height:0;box-shadow:none}
+  /* Export d'une fiche agent : seule la zone d'impression est imprimée */
+  body.print-zone #app{display:none!important}
+  body.print-zone #print-area{display:block}
+}
+</style>
+</head>
+<body>
+<!-- #app : conteneur de l'application. Son contenu est entièrement reconstruit par render() à chaque changement d'état. -->
+<div id="app"><div class="home"><p>Chargement…</p></div></div>
+<!-- #zone-impression : invisible à l'écran. Reçoit les fiches individuelles le temps d'une impression, puis est vidée. -->
+<div id="print-area" aria-hidden="true"></div>
+<noscript><p style="padding:16px">Cette page nécessite JavaScript.</p></noscript>
+
+<script>
+// SCRIPT 2 / 3 : Core, la logique métier.
+/*CORE-DEBUT*/
+/* Logique métier indépendante de l'interface : dates, fériés, données, répartition, synchronisation. */
+// =====================================================================================
+// MODULE Core
+// =====================================================================================
+// Fonction auto-exécutée : tout ce qu'elle déclare est privé, sauf l'objet retourné en fin de module.
+// Core n'accède ni au document, ni aux fichiers, ni au stockage du navigateur. Il n'utilise que
+// Date, JSON, Math, Promise et setTimeout. Les accès aux fichiers lui sont fournis par l'interface
+// sous la forme d'un objet io = { read(), write(texte) } : voir Store.
+// Conséquence pour l'audit : toute règle métier se lit et se teste ici, hors navigateur.
+//
+// Sommaire : dates . jours fériés . week-ends et poids . données . journal . opérations .
+//            synchronisation (Store) . répartition (propose) . analyse (analyze).
+const Core = (function(){
+  'use strict';
+  const MONTHS = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
+  const SHORT_MONTHS = ['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
+  const SHORT_DAYS = ['dim.','lun.','mar.','mer.','jeu.','ven.','sam.'];
+  const FORMAT = 'permanences-weekend';
+
+  // ----- Dates -----
+  // Convention : une date est une chaîne 'AAAA-MM-JJ'. Les calculs se font en UTC pour qu'un changement
+  // d'heure ne décale jamais un jour. Deux dates au même format se comparent comme des chaînes.
+  // parseISO : chaîne vers Date (minuit UTC).   toISO : Date vers chaîne.   addDays : décalage de n jours.
+  function parseISO(s){ const p=String(s).split('-').map(Number); return new Date(Date.UTC(p[0],p[1]-1,p[2])); }
+  function toISO(d){ return d.toISOString().slice(0,10); }
+  function addDays(s,n){ const d=parseISO(s); d.setUTCDate(d.getUTCDate()+n); return toISO(d); }
+  // isValidIso : vrai si la chaîne a le bon format ET désigne un jour réel (refuse 2027-02-30).
+  // Sert de garde à chaque lecture de date venant du fichier ou d'un champ de saisie.
+  function isValidIso(s){ return /^\d{4}-\d{2}-\d{2}$/.test(String(s)) && !isNaN(parseISO(s)) && toISO(parseISO(s))===s; }
+  // clone : copie profonde par JSON. Suffisant ici : les données ne contiennent que des objets simples.
+  function clone(o){ return JSON.parse(JSON.stringify(o)); }
+  // Mise en forme en français (dayNum à monthLabel). Fonctions d'affichage, sans effet sur les données.
+  function dayNum(d){ return d===1 ? '1er' : String(d); }
+  function longDate(s){ const d=parseISO(s); return dayNum(d.getUTCDate())+' '+MONTHS[d.getUTCMonth()]+' '+d.getUTCFullYear(); }
+  function frDate(s){ const p=s.split('-'); return p[2]+'/'+p[1]+'/'+p[0]; }
+  function shortDay(s){ const d=parseISO(s); return SHORT_DAYS[d.getUTCDay()]+' '+dayNum(d.getUTCDate()); }
+  function weekendLabel(saturday){
+    const sunday=addDays(saturday,1), a=parseISO(saturday), b=parseISO(sunday);
+    if(a.getUTCMonth()===b.getUTCMonth()) return 'sam. '+dayNum(a.getUTCDate())+' – dim. '+dayNum(b.getUTCDate())+' '+SHORT_MONTHS[b.getUTCMonth()];
+    return 'sam. '+dayNum(a.getUTCDate())+' '+SHORT_MONTHS[a.getUTCMonth()]+' – dim. '+dayNum(b.getUTCDate())+' '+SHORT_MONTHS[b.getUTCMonth()];
+  }
+  function monthLabel(key){ const p=key.split('-'); return MONTHS[Number(p[1])-1]+' '+p[0]; }
+  // today : date du jour selon l'horloge LOCALE du poste. C'est elle qui sépare les week-ends
+  // « passés » (samedi <= aujourd'hui, jamais modifiés par un calcul) des week-ends à venir.
+  // Un poste dont l'horloge est fausse classe donc mal les week-ends.
+  function today(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+  // frNumber : arrondi à 2 décimales et virgule décimale (1.5 devient « 1,5 »).
+  function frNumber(n){ return (Math.round(n*100)/100).toString().replace('.',','); }
+
+  /* Dimanche de Pâques (algorithme de Meeus / Jones / Butcher, calendrier grégorien) */
+  // ----- Jours fériés -----
+  // easter : date du dimanche de Pâques de l'année y. Calcul purement arithmétique, sans table ni réseau.
+  function easter(y){
+    const a=y%19,b=Math.floor(y/100),c=y%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),
+        h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),
+        month=Math.floor((h+l-7*m+114)/31),day=((h+l-7*m+114)%31)+1;
+    return toISO(new Date(Date.UTC(y,month-1,day)));
+  }
+  // holidays(y) : les 11 jours fériés nationaux de l'année y, sous la forme { 'AAAA-MM-JJ': libellé }.
+  //   8 dates fixes, 3 dates mobiles déduites de Pâques : lundi de Pâques (+1 j), Ascension (+39 j),
+  //   lundi de Pentecôte (+50 j). Les jours fériés propres à l'Alsace-Moselle ne sont pas gérés.
+  //   Le résultat est mémorisé par année (holidayCache) pour ne pas refaire le calcul.
+  const holidayCache={};
+  function holidays(y){
+    if(holidayCache[y]) return holidayCache[y];
+    const p=easter(y), f={};
+    f[y+'-01-01']="Jour de l'an";
+    f[addDays(p,1)]='Lundi de Pâques';
+    f[y+'-05-01']='Fête du Travail';
+    f[y+'-05-08']='Victoire 1945';
+    f[addDays(p,39)]='Ascension';
+    f[addDays(p,50)]='Lundi de Pentecôte';
+    f[y+'-07-14']='Fête nationale';
+    f[y+'-08-15']='Assomption';
+    f[y+'-11-01']='Toussaint';
+    f[y+'-11-11']='Armistice 1918';
+    f[y+'-12-25']='Noël';
+    return (holidayCache[y]=f);
+  }
+  // holidayName : libellé du jour férié à cette date, ou null.
+  function holidayName(iso){ return holidays(Number(iso.slice(0,4)))[iso] || null; }
+
+  /* Week-ends dont le samedi et le dimanche sont dans la période. Clé = date du samedi.
+     L'année d'un week-end est celle de son samedi. */
+  // ----- Week-ends de la période et poids -----
+  // MAX_WEEKENDS : garde-fou contre une période démesurée (borne le temps de calcul et la taille des écrans).
+  const MAX_WEEKENDS=1100; // environ 21 ans
+  // periodWeekends(reglages) : liste ordonnée des week-ends ENTIÈREMENT compris dans la période
+  // (samedi >= début et dimanche <= fin). Liste vide si les dates sont invalides ou inversées.
+  // Chaque élément :
+  //   key ............. date du samedi ; identifiant du week-end dans toutes les données
+  //   sunday .......... date du dimanche
+  //   month, year ..... ceux du samedi
+  //   holidays ........ jours fériés du vendredi au lundi : [{date, name, extended}]
+  //   days ............ jours de permanence de ce week-end : 2, ou 3 s'il est prolongé
+  //   extended ........ vrai si un férié tombe le vendredi ou le lundi
+  //   label ........... texte affiché
+  //   continuesPrev ... vrai si le week-end précédent de la liste est celui de la semaine d'avant
+  //                     (sert à détecter deux week-ends d'affilée)
+  // RÈGLE DE COMPTAGE (fixe, sans réglage)
+  //   Un week-end compte 2 jours de permanence : le samedi et le dimanche.
+  //   Chaque jour férié tombant le vendredi ou le lundi ajoute 1 jour : le week-end compte 3 jours.
+  //   Un jour férié tombant le samedi ou le dimanche n'ajoute rien.
+  //   La charge d'un agent est le total des jours de ses week-ends de permanence.
+  function periodWeekends(settings){
+    const start=settings.debut, endDate=settings.fin, res=[];
+    if(!isValidIso(start)||!isValidIso(endDate)||start>endDate) return res;
+    let saturday=start; while(parseISO(saturday).getUTCDay()!==6) saturday=addDays(saturday,1);
+    while(addDays(saturday,1)<=endDate && res.length<MAX_WEEKENDS){
+      let hols=[], extraDays=0;
+      // offset = décalage en jours par rapport au samedi : -1 vendredi, 0 samedi, 1 dimanche, 2 lundi.
+      [-1,0,1,2].forEach(function(offset){
+        const date=addDays(saturday,offset), n=holidayName(date); if(!n) return;
+        const extended=offset===-1||offset===2; if(extended) extraDays++;
+        hols.push({date:date,name:n,extended:extended});
+      });
+      const prev=res.length?res[res.length-1]:null;
+      res.push({key:saturday, sunday:addDays(saturday,1), month:saturday.slice(0,7), year:saturday.slice(0,4), holidays:hols, days:2+extraDays, extended:extraDays>0,
+                label:weekendLabel(saturday), continuesPrev:!!(prev && prev.key===addDays(saturday,-7))});
+      saturday=addDays(saturday,7);
+    }
+    return res;
+  }
+
+  /* ---------- Données ---------- */
+  // ----- Données -----
+  // defaultSettings : valeurs d'un fichier neuf, et valeurs de repli quand un réglage lu est invalide.
+  function defaultSettings(){
+    return {titre:'Permanences du week-end', debut:'2027-01-01', fin:'2027-06-30', parWeekend:1, eviterConsecutifs:true};
+  }
+  // newData : structure vide du fichier permanences-donnees.json.
+  //   salaries ..... agents [{id, nom, depuis}] (nom de clé historique ; l'interface dit « agent »)
+  //                  depuis : date d'arrivée 'AAAA-MM-JJ', ou '' si l'agent est là depuis le début
+  //   retires ...... identifiants des agents supprimés : empêche une opération en retard de les recréer
+  //   indispos ..... { id agent : [dates de samedi] }
+  //   planning ..... affectations { samedi : [id agent, ...] }, verrous [samedis], savedAt
+  //   journal ...... toujours vide dans le fichier ; sert de tampon en mémoire avant écriture du .log
+  //   updatedAt ........ horodatage de la dernière écriture
+  function newData(){
+    return {format:FORMAT, version:1, reglages:defaultSettings(), salaries:[], retires:[], indispos:{},
+            planning:{affectations:{}, verrous:[], enregistreLe:null}, journal:[], majLe:null};
+  }
+  // normalize(d) : POINT D'ENTRÉE DE TOUTE DONNÉE LUE DANS LE FICHIER. Contrôle de sécurité principal.
+  //   - Lève une erreur si le contenu n'est pas un objet ou porte un autre format : la page refuse alors
+  //     d'ouvrir le fichier et n'écrit rien.
+  //   - Reconstruit un objet neuf à partir des seuls champs connus : tout champ inattendu est ignoré.
+  //   - Chaque réglage est typé et borné ; une valeur invalide est remplacée par la valeur par défaut.
+  //   - Les dates sont filtrées par isValidIso ; les identifiants et les noms sont convertis en chaînes.
+  // Points d'attention :
+  //   - Les anciens réglages de poids (poidsFerie, poidsFerieWe) ne sont plus lus : s'ils figurent dans
+  //     un fichier ancien, ils sont ignorés puis disparaissent à la première écriture.
+  //   - Une date d'arrivée invalide est ignorée ; une ancienne quotité éventuelle n'est plus lue.
+  //   - La longueur des noms et le nombre d'agents ne sont pas bornés.
+  //   - Les clés de « affectations » ne sont pas contrôlées ici : une clé qui n'est pas un samedi de la
+  //     période est simplement ignorée par l'affichage et par le calcul.
+  //   - Un identifiant d'agent inconnu dans une affectation est ignoré par analyze() et par propose().
+  function normalize(d){
+    if(!d || typeof d!=='object' || Array.isArray(d)) throw new Error("ce fichier ne contient pas de données de permanences");
+    if(d.format && d.format!==FORMAT) throw new Error("ce fichier n'est pas un fichier de permanences");
+    const n=newData(), r=d.reglages||{}, defaults=n.reglages;
+    n.reglages={
+      titre: typeof r.titre==='string' && r.titre.trim() ? r.titre : defaults.titre,
+      debut: isValidIso(r.debut)?r.debut:defaults.debut,
+      fin: isValidIso(r.fin)?r.fin:defaults.fin,
+      parWeekend: Math.min(10,Math.max(1,parseInt(r.parWeekend,10)||defaults.parWeekend)),
+      eviterConsecutifs: r.eviterConsecutifs===undefined ? defaults.eviterConsecutifs : !!r.eviterConsecutifs
+    };
+    n.salaries=(Array.isArray(d.salaries)?d.salaries:[]).filter(function(s){return s&&s.id&&s.nom;}).map(function(s){return {id:String(s.id),nom:String(s.nom),depuis:isValidIso(s.depuis)?s.depuis:''};});
+    n.retires=(Array.isArray(d.retires)?d.retires:[]).map(String);
+    const unav=d.indispos&&typeof d.indispos==='object'?d.indispos:{};
+    Object.keys(unav).forEach(function(k){ if(Array.isArray(unav[k])&&unav[k].length) n.indispos[k]=unav[k].filter(isValidIso).sort(); });
+    const p=d.planning||{};
+    const asg=p.affectations&&typeof p.affectations==='object'?p.affectations:{};
+    Object.keys(asg).forEach(function(k){ if(Array.isArray(asg[k])) n.planning.affectations[k]=asg[k].map(function(x){return x?String(x):'';}); });
+    n.planning.verrous=Array.isArray(p.verrous)?p.verrous.filter(isValidIso):[];
+    n.planning.enregistreLe=p.enregistreLe||null;
+    n.journal=[]; // le journal est dans le fichier permanences.log
+    n.majLe=d.majLe||null;
+    return n;
+  }
+  // serialize : texte écrit dans le fichier. Indenté pour rester lisible et comparable ligne à ligne.
+  function serialize(d){ return JSON.stringify(d,null,1); }
+  // isPresent : l'agent est-il arrivé à la date de ce week-end (samedi >= date d'arrivée) ?
+  // Avant son arrivée, un agent n'est jamais affecté et ce week-end n'entre pas dans sa charge attendue.
+  function isPresent(s,key){ return !s.depuis || key>=s.depuis; }
+
+  /* ---------- Fichier log (permanences.log, dans le même dossier) ----------
+     Une ligne par modification : date | rôle | action [#identifiant]. L'identifiant évite les doublons.
+     Aucune information sur le poste ni sur la personne n'est enregistrée. */
+  // ----- Journal (permanences.log) -----
+  const LOG_FILE='permanences.log';
+  function twoDigits(n){ return (n<10?'0':'')+n; }
+  // logLine(e) : une entrée de journal vers une ligne « date heure | rôle | détail [#identifiant] ».
+  //   L'heure est celle du poste. Le rôle vaut « Administration » ou « Agent ».
+  //   clean() retire les retours à la ligne, tabulations, barres verticales et crochets de chaque champ :
+  //   un nom d'agent ne peut donc ni créer une fausse ligne, ni imiter un identifiant (injection de journal).
+  function logLine(e){
+    let d=new Date(e.at); if(isNaN(d)) d=new Date();
+    const q=d.getFullYear()+'-'+twoDigits(d.getMonth()+1)+'-'+twoDigits(d.getDate())+' '+twoDigits(d.getHours())+':'+twoDigits(d.getMinutes())+':'+twoDigits(d.getSeconds());
+    function clean(x){ return String(x||'').replace(/[\r\n\t|\[\]]+/g,' ').replace(/\s+/g,' ').trim(); }
+    return q+' | '+(clean(e.author)||'-')+' | '+clean(e.detail)+' [#'+clean(e.id)+']';
+  }
+  // lineId : identifiant placé en fin de ligne, ou null. Sert à ne jamais écrire deux fois la même ligne.
+  function lineId(l){ const m=/\[#([^\]]*)\]\s*$/.exec(l); return m?m[1]:null; }
+  // LOG_MODEL : décrit à Store comment lire, modifier et écrire le journal.
+  // Un « modèle » fournit : empty() contenu d'un fichier absent . fromText(texte) . toText(donnees) .
+  // normalize(donnees) . applyOp(donnees, operation) . opKey(operation).
+  // Ici une opération ajoute des lignes ; une ligne dont l'identifiant existe déjà est ignorée.
+  // Le fichier est relu et réécrit en entier à chaque ajout (fins de ligne Windows).
+  const LOG_MODEL={
+    empty:function(){ return {lines:[]}; },
+    fromText:function(txt){ return {lines:String(txt).replace(/^﻿/,'').split(/\r?\n/).filter(function(l){return l.trim();})}; },
+    toText:function(d){ return d.lines.join('\r\n')+'\r\n'; },
+    normalize:function(d){ return {lines:(d&&Array.isArray(d.lines)?d.lines:[]).map(String)}; },
+    applyOp:function(d,op){
+      const ids={}; d.lines.forEach(function(l){ const i=lineId(l); if(i) ids[i]=1; });
+      (op.lines||[]).forEach(function(l){ const i=lineId(l); if(!i||!ids[i]){ d.lines.push(l); if(i) ids[i]=1; } });
+      return d;
+    },
+    opKey:function(op){ return 'l|'+op.id; }
+  };
+  // findEmployee : agent portant cet identifiant, ou null.
+  // nameKey : forme de comparaison d'un nom (espaces réduits, minuscules) pour détecter les doublons.
+  // splitNames : texte libre vers liste de noms (séparateurs : ligne, virgule, point-virgule), sans doublon.
+  function findEmployee(d,id){ for(let i=0;i<d.salaries.length;i++) if(d.salaries[i].id===id) return d.salaries[i]; return null; }
+  function nameKey(s){ return String(s).trim().replace(/\s+/g,' ').toLocaleLowerCase('fr'); }
+  function splitNames(txt){
+    const seen={}, res=[];
+    String(txt).split(/[\n\r,;]+/).forEach(function(n){ n=n.trim().replace(/\s+/g,' '); const k=nameKey(n); if(n&&!seen[k]){seen[k]=1;res.push(n);} });
+    return res;
+  }
+
+  /* Chaque opération est idempotente : l'appliquer deux fois donne le même résultat.
+     C'est ce qui permet de la rejouer sur la dernière version du fichier sans rien écraser. */
+  // ----- Opérations -----
+  // LOG_MAX borne le tampon de journal en mémoire.
+  const LOG_MAX=5000;
+  const SETTING_NAMES={titre:'titre',debut:'début',fin:'fin',parWeekend:'agents par week-end',eviterConsecutifs:'éviter les week-ends consécutifs'};
+  function settingText(k,v){ return typeof v==='boolean'?(v?'oui':'non'):(k==='debut'||k==='fin')&&isValidIso(v)?frDate(v):String(v); }
+  function weekendText(key){ return isValidIso(key)?weekendLabel(key)+' '+key.slice(0,4):String(key); }
+  /* Journal : une entrée par modification réellement effectuée. */
+  function dayMonth(c){ return isValidIso(c)?frDate(c).slice(0,5):String(c); }
+  function summarizeSchedule(d,asg){
+    const names={}; d.salaries.forEach(function(x){names[x.id]=x.nom;});
+    return Object.keys(asg||{}).sort().filter(function(c){return (asg[c]||[]).some(Boolean);}).map(function(c){ return dayMonth(c)+' '+asg[c].filter(Boolean).map(function(id){return names[id]||'?';}).join('+'); }).join(', ');
+  }
+  // record : ajoute au tampon d.journal l'entrée correspondant à une opération RÉELLEMENT effectuée.
+  // Une opération sans effet (déjà appliquée) n'appelle pas record : elle ne laisse donc aucune trace.
+  // Store._write vide ce tampon et transmet les entrées à l'interface, qui les écrit dans le .log.
+  function record(d,op,detail){
+    if(op.id && d.journal.some(function(e){return e.id===op.id;})) return;
+    const e={id:op.id||'',at:op.at||new Date().toISOString(),author:op.author||'',type:op.type,detail:detail};
+    d.journal.push(e);
+    if(d.journal.length>LOG_MAX) d.journal.splice(0,d.journal.length-LOG_MAX);
+  }
+
+  /* Chaque opération est idempotente : l'appliquer deux fois donne le même résultat.
+     C'est ce qui permet de la rejouer sur la dernière version du fichier sans rien écraser. */
+  // applyOp(d, op) : SEUL point de modification des données. Modifie d en place et le retourne.
+  //   op = { type, id, at, author, ... } ; « author » est un rôle, jamais un nom de personne.
+  //   Propriété essentielle : chaque opération est IDEMPOTENTE et décrit un ÉTAT VOULU, pas un geste.
+  //   Exemple : « unavailable » dit « cet agent est indisponible ce week-end », et non « inverser la case ».
+  //   On peut donc la rejouer sur une version plus récente du fichier sans rien casser.
+  //   Un type inconnu lève une erreur.
+  function applyOp(d,op){
+    let s,i,arr,before,asg,txt;
+    switch(op.type){
+      // creation : aucune modification ; écrit seulement la ligne de journal de création du fichier.
+      case 'creation':
+        record(d,op,'Création du fichier de données');
+        break;
+      // unavailable {employee, we, val} : pose (val vrai) ou retire (val faux) une indisponibilité.
+      // Ignorée si l'agent n'existe plus. Aucun contrôle d'identité : voir l'action « toggle » de l'interface.
+      case 'unavailable':
+        s=findEmployee(d,op.employee); if(!s) break;
+        arr=d.indispos[op.employee]||[];
+        i=arr.indexOf(op.we);
+        if(op.val && i<0){
+          arr.push(op.we); arr.sort(); d.indispos[op.employee]=arr;
+          record(d,op,s.nom+' : indisponible le '+weekendText(op.we));
+        }else if(!op.val && i>=0){
+          arr.splice(i,1); if(arr.length) d.indispos[op.employee]=arr; else delete d.indispos[op.employee];
+          record(d,op,s.nom+' : de nouveau disponible le '+weekendText(op.we));
+        }
+        break;
+      // addEmployees {employees:[{id, name}]} : ajoute les agents absents. Sont ignorés : un identifiant déjà
+      // présent, un identifiant d'agent supprimé (liste retires), un nom déjà porté (comparaison par nameKey).
+      case 'addEmployees':
+        txt=[];
+        (op.employees||[]).forEach(function(n){
+          if(findEmployee(d,n.id) || d.retires.indexOf(n.id)>=0) return;
+          if(d.salaries.some(function(x){return nameKey(x.nom)===nameKey(n.name);})) return;
+          d.salaries.push({id:n.id,nom:n.name,depuis:''}); txt.push(n.name);
+        });
+        if(txt.length) record(d,op,(txt.length>1?'Ajout d’agents : ':'Ajout de l’agent ')+txt.join(', '));
+        break;
+      // rename {employee, name} : change le nom affiché. L'identifiant, lui, ne change jamais.
+      case 'rename':
+        s=findEmployee(d,op.employee);
+        if(s && s.nom!==op.name){ before=s.nom; s.nom=op.name; record(d,op,'Renommage : '+before+' → '+op.name); }
+        break;
+      // profile {employee, since} : fixe la date d'arrivée d'un agent (revalidée ici).
+      case 'profile':
+        s=findEmployee(d,op.employee); if(!s) break;
+        const since=isValidIso(op.since)?op.since:'';
+        if((s.depuis||'')!==since){ record(d,op,s.nom+' : arrivée '+(s.depuis?frDate(s.depuis):'début de période')+' → '+(since?frDate(since):'début de période')); s.depuis=since; }
+        break;
+      // remove {employee} : supprime l'agent et ses indisponibilités, vide ses postes dans le planning
+      // (la case est conservée, vide, pour ne pas décaler les autres agents du même week-end).
+      // L'identifiant rejoint la liste retires. Le détail supprimé part dans le journal.
+      case 'remove':
+        s=findEmployee(d,op.employee);
+        if(d.retires.indexOf(op.employee)<0) d.retires.push(op.employee);
+        if(!s) break;
+        const unav=(d.indispos[op.employee]||[]).slice(), slots=[];
+        d.salaries=d.salaries.filter(function(x){return x.id!==op.employee;});
+        delete d.indispos[op.employee];
+        Object.keys(d.planning.affectations).forEach(function(k){
+          const a=d.planning.affectations[k];
+          for(let j=0;j<a.length;j++) if(a[j]===op.employee){ a[j]=''; slots.push({we:k,slot:j}); }
+        });
+        record(d,op,'Suppression de '+s.nom+' ('+unav.length+' indisponibilité'+(unav.length>1?'s':'')+', '+slots.length+' permanence'+(slots.length>1?'s':'')+' libérée'+(slots.length>1?'s':'')+')'+
+          (unav.length?' — indisponibilités : '+unav.map(dayMonth).join(', '):'')+(slots.length?' — permanences libérées : '+slots.map(function(x){return dayMonth(x.we);}).join(', '):''));
+        break;
+      // settings {values} : ne modifie que les réglages connus (clés de SETTING_NAMES) dont la valeur change.
+      // Les valeurs sont contrôlées avant envoi par l'action « save-settings », puis à chaque relecture
+      // par normalize().
+      case 'settings':
+        txt=[];
+        Object.keys(op.values||{}).forEach(function(k){
+          if(!(k in SETTING_NAMES)) return;
+          if(JSON.stringify(d.reglages[k])!==JSON.stringify(op.values[k])){
+            txt.push(SETTING_NAMES[k]+' : '+settingText(k,d.reglages[k])+' → '+settingText(k,op.values[k]));
+            d.reglages[k]=op.values[k];
+          }
+        });
+        if(txt.length) record(d,op,'Réglages modifiés – '+txt.join(' ; '));
+        break;
+      // schedule {assignments, locks} : REMPLACE tout le planning enregistré. Le journal reçoit le résumé
+      // complet du nouveau planning. Si deux administrateurs enregistrent en même temps, le dernier l'emporte.
+      case 'schedule':
+        before=d.planning;
+        const newPlan={affectations:clone(op.assignments||{}), verrous:(op.locks||[]).slice().sort(), enregistreLe:op.at||null};
+        if(JSON.stringify(before)===JSON.stringify(newPlan)) break;
+        d.planning=newPlan;
+        asg=newPlan.affectations; const filled=Object.keys(asg).filter(function(k){return asg[k].some(Boolean);}).length;
+        record(d,op,'Planning enregistré ('+filled+' week-end'+(filled>1?'s':'')+' avec permanence) : '+summarizeSchedule(d,asg));
+        break;
+      // clearSchedule : vide le planning. Le contenu effacé est recopié dans le journal.
+      case 'clearSchedule':
+        before=d.planning;
+        if(!Object.keys(before.affectations).length && !before.verrous.length) break;
+        d.planning={affectations:{}, verrous:[], enregistreLe:null};
+        record(d,op,'Planning effacé (contenu précédent : '+(summarizeSchedule(d,before.affectations)||'vide')+')');
+        break;
+      default: throw new Error('Opération inconnue : '+op.type);
+    }
+    return d;
+  }
+  // opKey : désigne la CIBLE d'une opération (telle case d'indisponibilité, tel agent, les réglages,
+  // le planning). Store s'en sert pour ne revérifier que la dernière opération émise sur une même cible :
+  // une saisie plus ancienne ne doit pas être rétablie par-dessus une saisie plus récente.
+  function opKey(op){
+    switch(op.type){
+      case 'unavailable': return 'i|'+op.employee+'|'+op.we;
+      case 'rename': case 'remove': return 's|'+op.employee;
+      case 'profile': return 'q|'+op.employee;
+      case 'addEmployees': return 'a|'+(op.id||'');
+      case 'settings': return 'r|'+Object.keys(op.values||{}).sort().join(',');
+      default: return 'p';
+    }
+  }
+  // isApplied : une opération est « déjà appliquée » si l'appliquer ne change rien aux données
+  // (comparaison des textes JSON, horodatage updatedAt exclu). C'est le test d'idempotence utilisé par Store.
+  function withoutStamp(d){ const c=clone(d); delete c.majLe; return JSON.stringify(c); }
+  const DATA_MODEL={normalize:normalize,applyOp:applyOp,opKey:opKey,empty:null};
+  function isApplied(m,d,op){ return withoutStamp(d)===withoutStamp(m.applyOp(clone(d),op)); }
+
+  /* ---------- Synchronisation avec le fichier partagé ----------
+     io = { read(): Promise<string>, write(texte): Promise<void> }
+     Chaque modification : relecture du fichier -> application de la seule opération -> contrôle que
+     le fichier n'a pas bougé entre-temps -> écriture. Puis vérifications différées : si l'écriture d'un
+     collègue partie d'une version antérieure a effacé notre changement, on le réapplique. */
+  // ----- Synchronisation avec un fichier partagé : Store -----
+  // PROBLÈME : plusieurs postes écrivent le même fichier d'un partage réseau, sans serveur ni verrou.
+  // PRINCIPE : contrôle de concurrence optimiste.
+  //   1. relire le fichier ;
+  //   2. appliquer la seule opération demandée à cette version fraîche ;
+  //   3. relire juste avant d'écrire : si le texte a changé, un collègue a écrit, on recommence ;
+  //   4. écrire le fichier entier ;
+  //   5. revérifier plus tard (0,8 s, 2,5 s, 6 s) que l'opération est toujours présente, sinon la refaire.
+  // GARANTIE ET LIMITE : il reste un court intervalle entre la relecture (3) et l'écriture (4) où deux
+  // postes peuvent s'écraser. Les revérifications (5) et l'idempotence des opérations réparent ce cas.
+  // La garantie est donc pratique, non transactionnelle : elle suppose que le poste reste ouvert
+  // quelques secondes après la saisie. Fermer la page aussitôt après un clic annule ces revérifications.
+  // C'est pourquoi busy() dit si une écriture ou une revérification est en attente (l'interface
+  // avertit alors avant la fermeture), et onIdle signale le moment où tout est vérifié.
+  //
+  // Paramètres : io = { read(): Promise<texte>, write(texte): Promise }, fourni par l'interface.
+  // Options : checkDelays . wait (injectable pour les tests) . onRepair . model . onLog
+  //           . onIdle(tally) : appelée quand plus rien n'est en attente ; tally = {merges, abandons}
+  //             compte, depuis le précédent appel, les opérations rétablies et celles abandonnées.
+  // État interne :
+  //   chain ............ file d'attente : une seule lecture ou écriture à la fois pour ce Store
+  //   pending .......... opérations émises mais pas encore écrites
+  //   latest ........... dernière version lue du fichier
+  //   lastSeqByKey ..... numéro de la dernière opération émise pour chaque cible (voir opKey)
+  //   repairs .......... nombre d'opérations rétablies après écrasement
+  //   tally ............ rétablissements et abandons depuis le dernier onIdle
+  function Store(io,o){
+    o=o||{};
+    this.io=io;
+    this.checkDelays=o.checkDelays||[800,2500,6000];
+    this.wait=o.wait||function(ms){return new Promise(function(r){setTimeout(r,ms);});};
+    this.onRepair=o.onRepair||null;
+    this.m=o.model||DATA_MODEL;
+    this.onLog=o.onLog||null; // reçoit les entrées de journal produites par chaque écriture
+    this.chain=Promise.resolve();
+    this.pending=[];
+    this.latest=null;
+    this.lastSeqByKey={};
+    this.seq=0;
+    this.repairs=0;
+    this.pendingChecks=0;
+    this.onIdle=o.onIdle||null;
+    this.tally={merges:0,abandons:0};
+  }
+  // busy : vrai tant qu'une opération n'est pas écrite ou qu'une revérification est programmée.
+  // Fermer la page dans cet état peut faire perdre la saisie (voir GARANTIE ET LIMITE).
+  Store.prototype.busy=function(){ return this.pending.length>0||this.pendingChecks>0; };
+  // _abandon : compte une seule fois une opération qui a dépassé la limite de réparations.
+  Store.prototype._abandon=function(op){ if(!op.abandoned){ op.abandoned=true; this.tally.abandons++; } };
+  // _checkDone : une revérification est terminée ; si plus rien n'est en attente, appelle onIdle.
+  Store.prototype._checkDone=function(){
+    this.pendingChecks--;
+    if(this.busy()) return;
+    const b=this.tally; this.tally={merges:0,abandons:0};
+    if(this.onIdle){ try{ this.onIdle(b); }catch(e){} }
+  };
+  // enqueue : met fn dans la file. Une erreur n'interrompt pas la file ; elle est rendue à l'appelant.
+  Store.prototype.enqueue=function(fn){ const p=this.chain.then(fn); this.chain=p.catch(function(){}); return p; };
+  // readRobust : lit et valide le fichier, jusqu'à 6 essais espacés de 150 à 900 ms (un partage réseau
+  // peut répondre par un fichier momentanément vide ou tronqué pendant l'écriture d'un collègue).
+  // Une perte d'autorisation (NotAllowedError) est remontée aussitôt, sans nouvel essai.
+  // Un fichier vide est une erreur pour les données, et un journal neuf pour le .log (model.empty).
+  Store.prototype.readRobust=async function(){
+    let err;
+    for(let i=0;i<6;i++){
+      try{
+        const txt=await this.io.read();
+        if(!txt||!txt.trim()){ if(this.m.empty) return {txt:txt||'', data:this.m.empty()}; throw new Error('fichier vide'); }
+        return {txt:txt, data:this.m.normalize(this.m.fromText?this.m.fromText(txt):JSON.parse(txt))};
+      }catch(e){ err=e; if(e&&e.name==='NotAllowedError') throw e; await this.wait(150*(i+1)); }
+    }
+    throw new Error('lecture du fichier impossible ('+(err&&err.message)+')');
+  };
+  // view : ce que l'écran doit montrer = dernière version lue + opérations pas encore écrites.
+  Store.prototype.view=function(){
+    const d=clone(this.latest), m=this.m;
+    this.pending.forEach(function(op){ m.applyOp(d,op); });
+    return d;
+  };
+  // loadData : relit le fichier (dans la file) et retourne la vue.
+  Store.prototype.loadData=function(){
+    const self=this;
+    return this.enqueue(async function(){ const r=await self.readRobust(); self.latest=r.data; return self.view(); });
+  };
+  // execute(op) : numérote l'opération, l'écrit (dans la file), puis programme les revérifications.
+  // En cas d'échec, l'erreur est rendue à l'appelant mais une revérification reste programmée :
+  // c'est elle qui retentera l'écriture.
+  Store.prototype.execute=function(op){
+    const self=this;
+    op.seq=++this.seq;
+    this.lastSeqByKey[this.m.opKey(op)]=op.seq;
+    this.pending.push(op);
+    return this.enqueue(async function(){
+      try{ await self._write(op); }
+      catch(e){ op.repairs=(op.repairs||0)+1; self._scheduleChecks(op); throw e; } // nouvel essai automatique
+      finally{ self.pending=self.pending.filter(function(x){return x!==op;}); }
+      self._scheduleChecks(op);
+      return self.view();
+    });
+  };
+  // _write(op) : étapes 1 à 4 du principe, 25 tentatives au plus. Retourne faux si rien n'était à écrire.
+  // L'attente entre deux tentatives est aléatoire et croissante, pour que deux postes en conflit
+  // ne recommencent pas au même instant.
+  Store.prototype._write=async function(op){
+    for(let attempt=0;attempt<25;attempt++){
+      const r=await this.readRobust();
+      if(isApplied(this.m,r.data,op)){ this.latest=r.data; return false; }
+      const logCount=r.data.journal?r.data.journal.length:0;
+      this.m.applyOp(r.data,op);
+      const newEntries=r.data.journal?r.data.journal.slice(logCount):[];
+      if(r.data.journal) r.data.journal=[]; // le journal part dans son propre fichier
+      r.data.majLe=new Date().toISOString();
+      const output=this.m.toText?this.m.toText(r.data):serialize(r.data);
+      const before=await this.io.read();
+      // Un collègue vient d'écrire : on recommence, en attendant un peu plus à chaque fois.
+      if((before||'')!==(r.txt||'')){ await this.wait((40+Math.random()*250)*Math.min(1+attempt/3,4)); continue; }
+      await this.io.write(output);
+      this.latest=r.data;
+      if(newEntries.length&&this.onLog){ try{ this.onLog(newEntries); }catch(e){} }
+      return true;
+    }
+    throw new Error("le fichier est modifié en continu par d'autres personnes, réessayez dans un instant");
+  };
+  // _scheduleChecks : programme les revérifications différées de cette opération.
+  Store.prototype._scheduleChecks=function(op){
+    const self=this;
+    this.checkDelays.forEach(function(ms){
+      self.pendingChecks++;
+      setTimeout(function(){
+        self.enqueue(function(){ return self._check(op); }).catch(function(){}).then(function(){ self._checkDone(); });
+      }, ms);
+    });
+  };
+  // _check(op) : sans objet si une opération plus récente vise la même cible. Sinon relit le fichier
+  // et, si l'opération en a disparu, la réécrit. Borné à 20 réparations par opération : au-delà,
+  // l'opération est abandonnée et comptée dans tally.abandons.
+  Store.prototype._check=async function(op){
+    if(this.lastSeqByKey[this.m.opKey(op)]!==op.seq) return;
+    let r;
+    try{ r=await this.readRobust(); }
+    catch(e){ op.repairs=(op.repairs||0)+1; if(op.repairs<=20) this._scheduleChecks(op); else this._abandon(op); throw e; }
+    this.latest=r.data;
+    if(isApplied(this.m,r.data,op)) return;
+    op.repairs=(op.repairs||0)+1;
+    try{ await this._write(op); }
+    catch(e){ if(op.repairs<=20) this._scheduleChecks(op); else this._abandon(op); throw e; } // fichier très sollicité : on réessaiera plus tard
+    this.repairs++; this.tally.merges++;
+    // La réécriture peut à son tour être écrasée : on la revérifie (avec une limite de sécurité).
+    if(op.repairs<=20) this._scheduleChecks(op);
+    if(this.onRepair) this.onRepair(this.view());
+  };
+
+  /* ---------- Répartition ---------- */
+  // ----- Répartition automatique : propose -----
+  // propose(data, o) : calcule un planning. NE MODIFIE PAS data et n'écrit rien : le résultat est un
+  // aperçu que l'administration enregistre ou abandonne.
+  // Options o :
+  //   base .......... planning d'où sont repris les week-ends figés
+  //   locks ......... week-ends à ne pas modifier
+  //   today ......... les week-ends dont le samedi est <= à cette date sont figés
+  //   reference ..... planning de départ du mode « adjust » ; absent en proposition complète
+  //   durationMs, minAttempts, maxAttempts, rng ... réglages de la recherche (injectables pour les tests)
+  // Résultat : { assignments {samedi:[id agent]}, attempts, cost, changes }.
+  //
+  // MÉTHODE : heuristique. Plusieurs constructions gloutonnes, chacune améliorée par recherche locale ;
+  // on garde la meilleure. Le résultat n'est pas garanti optimal et dépend du hasard (Math.random,
+  // qui n'a ici aucun rôle de sécurité).
+  //
+  // NOTATIONS
+  //   W = nombre de week-ends . E = nombre d'agents . k = agents par week-end . Y = nombre d'années
+  //   Un planning A est un tableau de W listes d'indices d'agents.
+  //   weights[i] . yearIdx[i] indice de l'année . consec[i] vrai si le week-end i suit le week-end i-1
+  //   avail[i][e] vrai si l'agent e est disponible le week-end i . freeCount[i] nombre de disponibles
+  //   locked[i] vrai si le week-end i est figé . fixed[i] son contenu . ref[i] son contenu de référence
+  function propose(data,o){
+    o=o||{};
+    const R=data.reglages, wes=periodWeekends(R), ids=data.salaries.map(function(s){return s.id;});
+    const W=wes.length, E=ids.length, k=Math.max(1,R.parWeekend|0), avoid=!!R.eviterConsecutifs;
+    const rng=o.rng||Math.random, budget=o.durationMs==null?1500:o.durationMs, maxAttempts=o.maxAttempts||80, minAttempts=o.minAttempts||6;
+    const idx={}; ids.forEach(function(id,i){idx[id]=i;});
+    // La note est calculée en « week-ends » : 2 jours = 1, 3 jours = 1,5. Seule l'unité diffère de
+    // l'affichage (en jours) ; les coefficients de la note sont réglés pour cette unité.
+    const weights=wes.map(function(w){return w.days/2;});
+    // Index de l'année de chaque week-end : sur une période de plusieurs années, on équilibre aussi chaque année.
+    const years=[], yearIdx=wes.map(function(w){ let y=years.indexOf(w.year); if(y<0){ years.push(w.year); y=years.length-1; } return y; }), Y=years.length;
+    const consec=wes.map(function(w){return w.continuesPrev;});
+    // Disponible = arrivé à cette date ET non déclaré indisponible.
+    const avail=wes.map(function(w){ return data.salaries.map(function(s){ return isPresent(s,w.key) && (data.indispos[s.id]||[]).indexOf(w.key)<0; }); });
+    const freeCount=avail.map(function(a){ return a.filter(Boolean).length; });
+    // CHARGE ATTENDUE (prorata de présence). share[e] = total des week-ends où l'agent est présent.
+    // La charge visée pour un agent est : charge totale x share[e] / somme des share.
+    // Si tous les agents sont présents depuis le début, toutes les parts sont égales :
+    // la charge visée est alors la moyenne.
+    // shareY, shareSumY : mêmes grandeurs, année par année. rel[e] : part de l'agent rapportée à la part moyenne.
+    let share=new Array(E).fill(0), shareY=new Array(Y*E).fill(0), shareSum=0, shareSumY=new Array(Y).fill(0);
+    data.salaries.forEach(function(s,e){
+      wes.forEach(function(w,i){ if(!isPresent(s,w.key)) return; const p=weights[i]; share[e]+=p; shareY[yearIdx[i]*E+e]+=p; });
+    });
+    share.forEach(function(p,e){ shareSum+=p; for(let y=0;y<Y;y++) shareSumY[y]+=shareY[y*E+e]; });
+    const rel=share.map(function(p){ return shareSum>0&&p>0 ? p*E/shareSum : 1e-9; });
+    const locks={}; (o.locks||[]).forEach(function(c){locks[c]=1;});
+    const base=o.base||{};
+    // Un week-end passé (samedi <= aujourd'hui) n'est jamais modifié par une proposition.
+    const todayIso=o.today||'';
+    // Figé = verrouillé par l'administration, ou passé.
+    const locked=wes.map(function(w){return !!locks[w.key] || (!!todayIso && w.key<=todayIso);});
+    const res={assignments:{}, attempts:0, cost:0, changes:0};
+    if(!W) return res;
+    // Aucun agent : seuls les week-ends figés gardent leur contenu.
+    if(!E){ wes.forEach(function(w,i){ res.assignments[w.key]=locked[i]?(base[w.key]||[]).slice():[]; }); return res; }
+    // Mode « adjust » : chaque changement par rapport au planning de référence coûte un peu,
+    // pour ne modifier que le nécessaire. La réduction de l'écart de charge reste prioritaire.
+    const refAsg=o.reference||null, changeCost=refAsg?(o.changeWeight==null?2:o.changeWeight):0;
+    const ref=wes.map(function(w){ return ((refAsg&&refAsg[w.key])||[]).filter(function(id){return id in idx;}).map(function(id){return idx[id];}); });
+    const fixed=wes.map(function(w,i){
+      if(!locked[i]) return null;
+      return (base[w.key]||[]).filter(function(id){return id in idx;}).map(function(id){return idx[id];});
+    });
+
+    // Sur une période de plusieurs années, une amélioration peut être longue : on la borne dans le temps.
+    const t0=Date.now();
+    // Garde-fou de durée : au-delà de 3 fois le budget (3,6 s avec le réglage de l'interface),
+    // l'amélioration en cours s'arrête et rend le meilleur planning atteint.
+    function tooLong(){ return budget>0 && Date.now()-t0>budget*3; }
+    // cost(A) : la NOTE d'un planning. Plus elle est basse, meilleur il est.
+    //   unfilled ... postes non pourvus                                         x 1 000 000
+    //   cons ....... fois où un agent enchaîne deux week-ends (si l'option)     x 1 000
+    //   v .......... somme des carrés des écarts entre charge et charge attendue, période entière   x 10
+    //   vy ......... même somme, calculée dans chaque année puis additionnée (si Y > 1)    x 3
+    //   mx - mn .... écart entre l'agent le plus au-dessus et le plus en dessous de sa part   x 1
+    //   changeCount  affectations absentes du planning de référence (mode « adjust »)      x 2
+    // Les coefficients sont assez éloignés pour former une hiérarchie : pourvoir les postes, puis éviter
+    // les enchaînements, puis équilibrer, puis limiter les changements.
+    // Les week-ends figés entrent dans la charge mais pas dans le compte des changements.
+    function cost(A){
+      let load=new Array(E).fill(0), unfilled=0, cons=0, i, j, a;
+      let changeCount=0, loadY=Y>1?new Array(Y*E).fill(0):null;
+      for(i=0;i<W;i++){
+        a=A[i]; if(a.length<k) unfilled+=k-a.length;
+        for(j=0;j<a.length;j++){
+          load[a[j]]+=weights[i];
+          if(loadY) loadY[yearIdx[i]*E+a[j]]+=weights[i];
+          if(consec[i]&&A[i-1].indexOf(a[j])>=0) cons++;
+          if(changeCost&&!locked[i]&&ref[i].indexOf(a[j])<0) changeCount++;
+        }
+      }
+      let tot=0,mx=-Infinity,mn=Infinity,v=0,vy=0,d;
+      for(i=0;i<E;i++) tot+=load[i];
+      // d = écart entre la charge de l'agent et sa charge attendue.
+      for(i=0;i<E;i++){ d=load[i]-(shareSum>0?tot*share[i]/shareSum:0); v+=d*d; if(d>mx)mx=d; if(d<mn)mn=d; }
+      if(loadY) for(let y=0;y<Y;y++){
+        let ty=0; for(i=0;i<E;i++) ty+=loadY[y*E+i];
+        for(i=0;i<E;i++){ d=loadY[y*E+i]-(shareSumY[y]>0?ty*shareY[y*E+i]/shareSumY[y]:0); vy+=d*d; }
+      }
+      // Formule de la note.
+      return unfilled*1e6 + (avoid?cons*1000:0) + v*10 + vy*3 + (mx-mn) + changeCost*changeCount;
+    }
+    // adjacent : vrai si placer l'agent e au week-end i créerait deux week-ends d'affilée (avant ou après).
+    function adjacent(A,i,e){
+      return (consec[i]&&A[i-1].indexOf(e)>=0) || (i+1<W&&consec[i+1]&&A[i+1].indexOf(e)>=0);
+    }
+    // build(initial, dropRate) : fabrique un planning de départ.
+    //   Les week-ends figés sont recopiés. Les autres partent de « initial » (en retirant les agents devenus
+    //   indisponibles), ou vides ; dropRate = part des week-ends volontairement vidés pour varier les essais.
+    //   Les postes vides sont ensuite pourvus en traitant d'abord les week-ends où le moins d'agents sont
+    //   disponibles : ce sont eux qui laissent le moins de choix.
+    function build(initial,dropRate){
+      const A=wes.map(function(w,i){
+        if(locked[i]) return fixed[i].slice();
+        if(!initial||(dropRate&&rng()<dropRate)) return [];
+        const a=[]; initial[i].forEach(function(e){ if(avail[i][e]&&a.indexOf(e)<0&&a.length<k) a.push(e); });
+        return a;
+      });
+      const load=new Array(E).fill(0);
+      A.forEach(function(a,i){a.forEach(function(e){load[e]+=weights[i];});});
+      // Les week-ends les plus contraints (le moins de personnes disponibles) sont traités en premier.
+      const order=[]; for(let i=0;i<W;i++) if(!locked[i]) order.push({i:i,r:rng()});
+      order.sort(function(x,y){return (freeCount[x.i]-freeCount[y.i])||(x.r-y.r);});
+      order.forEach(function(o){
+        const i=o.i;
+        while(A[i].length<k){
+          let best=-1,bs=Infinity;
+          for(let e=0;e<E;e++){
+            if(!avail[i][e]||A[i].indexOf(e)>=0) continue;
+            // Choix glouton : l'agent disponible dont la charge APRÈS affectation, rapportée à sa part, serait la plus basse.
+            // Le terme aléatoire (moins de 0,9) départage les agents proches ; +1000 écarte les enchaînements.
+            let s=(load[e]+weights[i])/rel[e]+rng()*0.9;
+            if(avoid&&adjacent(A,i,e)) s+=1000;
+            if(s<bs){bs=s;best=e;}
+          }
+          if(best<0) break;
+          A[i].push(best); load[best]+=weights[i];
+        }
+      });
+      return A;
+    }
+    // improve(A) : recherche locale. Modifie A en place, retourne sa note finale.
+    //   Deux mouvements, gardés seulement s'ils font baisser la note (sinon annulés) :
+    //     remplacement : un agent affecté cède son poste à un autre agent disponible ;
+    //     échange : deux agents de deux week-ends différents échangent leurs postes.
+    //   On recommence tant qu'une passe a amélioré la note, 40 passes au plus.
+    //   Jamais d'agent indisponible, jamais deux fois le même agent sur un week-end, jamais de week-end figé.
+    //   Coût en calcul : une passe d'échanges évalue de l'ordre de W x W x k x k plannings.
+    function improve(A){
+      let c=cost(A), ok=true, passes=0, i, j, s, t, e, a, b, x, y, n, previous;
+      while(ok&&passes<40){
+        ok=false; passes++;
+        // Remplacements : une personne affectée est remplacée par une autre disponible.
+        for(i=0;i<W;i++){ if(locked[i]) continue; if(tooLong()) return c; a=A[i];
+          for(s=0;s<a.length;s++){ previous=a[s];
+            for(e=0;e<E;e++){
+              if(e===previous||!avail[i][e]||a.indexOf(e)>=0) continue;
+              a[s]=e; n=cost(A);
+              if(n<c-1e-9){c=n;ok=true;previous=e;} else a[s]=previous;
+            }
+          }
+        }
+        // Échanges : deux personnes affectées à deux week-ends différents échangent leurs week-ends.
+        for(i=0;i<W;i++){ if(locked[i]) continue; if(tooLong()) return c;
+          for(j=i+1;j<W;j++){ if(locked[j]) continue; a=A[i]; b=A[j];
+            for(s=0;s<a.length;s++) for(t=0;t<b.length;t++){
+              x=a[s]; y=b[t];
+              if(x===y||!avail[j][x]||!avail[i][y]||b.indexOf(x)>=0||a.indexOf(y)>=0) continue;
+              a[s]=y; b[t]=x; n=cost(A);
+              if(n<c-1e-9){c=n;ok=true;} else {a[s]=x;b[t]=y;}
+            }
+          }
+        }
+      }
+      return c;
+    }
+    // Boucle des essais : au moins minAttempts (6), puis tant que le budget de temps et maxAttempts (80)
+    // le permettent. Seul le planning de note la plus basse est conservé.
+    let bestPlan=null, bestCost=Infinity, attempts=0;
+    while(attempts<minAttempts || (attempts<maxAttempts && Date.now()-t0<budget)){
+      // En mode adjust : 1er essai depuis le planning actuel, puis essais partiellement perturbés ou repartis de zéro.
+      const A=refAsg?(attempts===0?build(ref):attempts%3===0?build():build(ref,0.25)):build();
+      const c=improve(A); attempts++;
+      if(c<bestCost){bestCost=c; bestPlan=A.map(function(a){return a.slice();});}
+    }
+    wes.forEach(function(w,i){ res.assignments[w.key]=bestPlan[i].map(function(e){return ids[e];}); });
+    res.attempts=attempts; res.cost=bestCost;
+    // changes = nombre de week-ends dont la composition diffère de la référence (affiché à l'écran).
+    if(refAsg) wes.forEach(function(w,i){ if(bestPlan[i].slice().sort().join()!==ref[i].slice().sort().join()) res.changes++; });
+    return res;
+  }
+
+  /* ---------- Analyse d'un planning ---------- */
+  /* o.year (facultatif, ex. '2027') limite l'analyse aux week-ends de cette année. */
+  // ----- Analyse d'un planning : analyze -----
+  // analyze(data, asg, o) : statistiques et alertes d'un planning. Lecture seule.
+  //   Toutes les charges sont en JOURS.
+  //   Par agent : name, since, count (week-ends), holidayCount (dont week-ends avec férié), workload (total des jours), unavailableCount,
+  //               share, goal (charge attendue en jours, selon la date d'arrivée), gap (workload - goal).
+  //   Global : max, min, average, goalMax, gapMax, gapMin, posts, filled, passes, freeList {samedi: nb disponibles},
+  //            gap = gapMax - gapMin : écart entre l'agent le plus au-dessus et le plus en dessous de sa part.
+  //            Si tous les agents ont la même part, c'est l'écart entre le plus chargé et le moins chargé.
+  //   Alertes, pour les week-ends à venir seulement, triées par gravité :
+  //     unavailable .. agent affecté alors qu'il est indisponible, ou avant sa date d'arrivée
+  //     duplicate .... agent affecté deux fois au même week-end (signalé aussi pour un week-end passé)
+  //     unfilled ..... poste non pourvu
+  //     consecutive .. même agent deux week-ends d'affilée
+  //   Les week-ends passés comptent dans la charge et les totaux.
+  function analyze(data,asg,o){
+    o=o||{}; let todayIso=o.today||'', posts=0, filled=0, passes=0;
+    let R=data.reglages, wes=periodWeekends(R), k=Math.max(1,R.parWeekend|0), stats={}, alerts=[];
+    if(o.year) wes=wes.filter(function(w){return w.year===String(o.year);});
+    data.salaries.forEach(function(s){
+      let count=0; (data.indispos[s.id]||[]).forEach(function(c){ if(wes.some(function(w){return w.key===c;})) count++; });
+      let share=0; wes.forEach(function(w){ if(isPresent(s,w.key)) share+=w.days; });
+      stats[s.id]={id:s.id, name:s.nom, count:0, holidayCount:0, workload:0, unavailableCount:count, since:s.depuis||'', share:share, goal:0, gap:0};
+    });
+    const freeList={};
+    wes.forEach(function(w,i){
+      const a=(asg[w.key]||[]).filter(function(id){return id && stats[id];});
+      freeList[w.key]=data.salaries.filter(function(s){return isPresent(s,w.key)&&(data.indispos[s.id]||[]).indexOf(w.key)<0;}).length;
+      const seen={}, past=!!todayIso&&w.key<=todayIso; if(past) passes++;
+      a.forEach(function(id){
+        if(seen[id]){ alerts.push({type:'duplicate',key:w.key,msg:w.label+' : '+stats[id].name+' est affecté(e) deux fois'}); return; }
+        seen[id]=1;
+        const st=stats[id]; st.count++; st.workload+=w.days; if(w.holidays.length) st.holidayCount++;
+        if(!past&&(data.indispos[id]||[]).indexOf(w.key)>=0) alerts.push({type:'unavailable',key:w.key,msg:w.label+' : '+st.name+' est affecté(e) alors qu’il/elle est indisponible'});
+        if(!past&&st.since&&w.key<st.since) alerts.push({type:'unavailable',key:w.key,msg:w.label+' : '+st.name+' est affecté(e) avant son arrivée'});
+        if(!past&&w.continuesPrev && (asg[addDays(w.key,-7)]||[]).indexOf(id)>=0) alerts.push({type:'consecutive',key:w.key,msg:w.label+' : '+st.name+' est de permanence deux week-ends d’affilée'});
+      });
+      const n=Object.keys(seen).length;
+      posts+=k; filled+=Math.min(k,n);
+      if(n<k&&!past) alerts.push({type:'unfilled',key:w.key,msg:w.label+' : '+(k-n)+' poste'+(k-n>1?'s':'')+' non pourvu'+(k-n>1?'s':'')+(freeList[w.key]<k?' ('+freeList[w.key]+' agent'+(freeList[w.key]>1?'s':'')+' disponible'+(freeList[w.key]>1?'s':'')+')':'')});
+    });
+    const rows=data.salaries.map(function(s){return stats[s.id];});
+    const loads=rows.map(function(s){return s.workload;});
+    const max=loads.length?Math.max.apply(null,loads):0, min=loads.length?Math.min.apply(null,loads):0;
+    const order={unavailable:0,duplicate:1,unfilled:2,consecutive:3};
+    alerts.sort(function(a,b){return (order[a.type]-order[b.type])||(a.key<b.key?-1:a.key>b.key?1:0);});
+    const tot=loads.reduce(function(x,y){return x+y;},0), avg=loads.length?tot/loads.length:0;
+    let shareSum=rows.reduce(function(x,s){return x+s.share;},0), goalMax=0, gapMax=-Infinity, gapMin=Infinity;
+    rows.forEach(function(s){
+      s.goal=shareSum>0?tot*s.share/shareSum:0; s.gap=s.workload-s.goal;
+      if(s.goal>goalMax) goalMax=s.goal; if(s.gap>gapMax) gapMax=s.gap; if(s.gap<gapMin) gapMin=s.gap;
+    });
+    if(!rows.length){ gapMax=0; gapMin=0; }
+    return {weekends:wes, stats:rows, alerts:alerts, max:max, min:min, average:avg, goalMax:goalMax, gapMax:gapMax, gapMin:gapMin,
+            gap:Math.round((gapMax-gapMin)*100)/100, freeList:freeList, posts:posts, filled:filled, passes:passes};
+  }
+
+  // Interface publique de Core : tout ce qui n'est pas listé ici est inaccessible depuis l'extérieur.
+  return {MONTHS:MONTHS, today:today, parseISO:parseISO, toISO:toISO, addDays:addDays, isValidIso:isValidIso, clone:clone,
+    longDate:longDate, frDate:frDate, shortDay:shortDay, weekendLabel:weekendLabel, monthLabel:monthLabel, frNumber:frNumber,
+    easter:easter, holidays:holidays, holidayName:holidayName, periodWeekends:periodWeekends,
+    newData:newData, normalize:normalize, serialize:serialize, findEmployee:findEmployee,
+    splitNames:splitNames, nameKey:nameKey, applyOp:applyOp, opKey:opKey, isPresent:isPresent,
+    Store:Store, propose:propose, analyze:analyze, LOG_FILE:LOG_FILE, logLine:logLine, lineId:lineId, LOG_MODEL:LOG_MODEL};
+})();
+/*CORE-FIN*/
+</script>
+
+<script>
+// SCRIPT 3 / 3 : Interface.
+// =====================================================================================
+// Fonction auto-exécutée : aucune variable globale. Seul lien avec le script précédent : l'objet Core.
+// ARCHITECTURE
+//   État unique S . render() reconstruit l'écran depuis S . un écouteur « click » et un écouteur
+//   « change » sur le document appellent les tables actions et changes.
+//   Toute modification de données passe par execute(op), qui appelle Core.applyOp puis Store.
+// RÈGLE DE SÉCURITÉ DE L'AFFICHAGE
+//   L'écran est produit par concaténation de chaînes puis innerHTML. Toute valeur qui vient du fichier
+//   ou d'une saisie (nom d'agent, titre, nom de dossier, message) DOIT passer par esc().
+//   Sont insérés sans esc() uniquement : des constantes du code, des nombres, des dates calculées,
+//   des identifiants de classes CSS pris dans une liste fixe.
+/* ---------- Interface ---------- */
+(function(){
+'use strict';
+const C=Core;
+const app=document.getElementById('app');
+// FS_OK : le navigateur sait-il ouvrir un dossier en écriture ? Sinon, écran « incompatible ».
+// DATA_FILE : nom imposé du fichier de données. Aucun nom de fichier ne vient de l'utilisateur.
+const FS_OK=typeof window.showDirectoryPicker==='function';
+const DATA_FILE='permanences-donnees.json';
+
+// esc : ÉCHAPPEMENT HTML. Neutralise & < > " ' : la valeur est sûre dans le texte d'une balise et dans
+// un attribut entre guillemets. C'est la barrière contre l'injection de code par un nom d'agent, un titre
+// ou un fichier de données modifié à la main.
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+// LS : accès à localStorage, préfixe « permanences. ». Clés : admin, employee, theme.
+// Préférences d'affichage du poste, sans donnée de planning. Toute erreur de stockage est ignorée.
+const LS={
+  get:function(k,d){ try{ const v=localStorage.getItem('permanences.'+k); return v==null?d:JSON.parse(v); }catch(e){ return d; } },
+  set:function(k,v){ try{ localStorage.setItem('permanences.'+k,JSON.stringify(v)); }catch(e){} },
+  del:function(k){ try{ localStorage.removeItem('permanences.'+k); }catch(e){} }
+};
+// uid : identifiant d'agent ou d'opération (horloge + hasard). Sert à distinguer, pas à protéger :
+// il n'est ni secret ni imprévisible.
+function uid(){ return 's'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+function timeStr(d){ d=d||new Date(); return d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+function dateTimeStr(iso){ if(!iso) return ''; const d=new Date(iso); if(isNaN(d)) return ''; return d.toLocaleDateString('fr-FR')+' à '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}); }
+function plural(n,singular,pluralForm){ return n+' '+(n>1?(pluralForm||singular+'s'):singular); }
+// inDays : affichage d'une charge ou d'un écart, toujours exprimés en jours de permanence.
+function inDays(n){ return C.frNumber(n)+' j'; }
+// signedDays : écart signé, « +1,5 », « −0,5 » ou « 0 ».
+function signedDays(n){ const r=Math.round(n*100)/100; return r>0?'+'+C.frNumber(r):r<0?'−'+C.frNumber(-r):'0'; }
+
+/* --- IndexedDB : mémorise le lien vers le dossier --- */
+// IndexedDB, base « permanences-weekend », magasin « kv », une seule clé « folder » : l'objet remis par
+// Edge qui désigne le dossier choisi. Ce n'est pas un chemin et il ne donne aucun droit par lui-même :
+// Edge redemande l'accord de l'utilisateur selon sa propre politique.
+function idb(){ return new Promise(function(res,rej){ const r=indexedDB.open('permanences-weekend',1); r.onupgradeneeded=function(){ r.result.createObjectStore('kv'); }; r.onsuccess=function(){res(r.result);}; r.onerror=function(){rej(r.error);}; }); }
+function idbOp(mode,fn){
+  // Délai de garde : si IndexedDB ne répond pas, on continue sans mémoriser le fichier.
+  const guard=new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('IndexedDB ne répond pas')); },3000); });
+  return Promise.race([guard, idb().then(function(db){ return new Promise(function(res,rej){ const t=db.transaction('kv',mode), q=fn(t.objectStore('kv')); t.oncomplete=function(){res(q&&q.result);}; t.onerror=function(){rej(t.error);}; }); })]);
+}
+function idbGet(k){ return idbOp('readonly',function(s){return s.get(k);}); }
+function idbSet(k,v){ return idbOp('readwrite',function(s){return s.put(v,k);}); }
+function idbDel(k){ return idbOp('readwrite',function(s){return s.delete(k);}); }
+
+/* Lecture / écriture d'un fichier du dossier partagé (fichier absent = texte vide). */
+// fileIo : SEUL accès en lecture et en écriture aux fichiers, pour un nom fixé par le code
+// (DATA_FILE ou Core.LOG_FILE), dans le dossier autorisé. Un fichier absent se lit comme un texte vide.
+// L'écriture remplace le fichier entier ; Edge écrit dans un fichier temporaire puis le substitue à la
+// fermeture, et abort() abandonne l'écriture en cas d'erreur.
+function fileIo(dirHandle,fullName){
+  return {
+    read:async function(){
+      try{ const h=await dirHandle.getFileHandle(fullName); return await (await h.getFile()).text(); }
+      catch(e){ if(e&&e.name==='NotFoundError') return ''; throw e; }
+    },
+    write:async function(txt){
+      const h=await dirHandle.getFileHandle(fullName,{create:true}), w=await h.createWritable();
+      try{ await w.write(txt); await w.close(); }catch(e){ try{ await w.abort(); }catch(_){} throw e; }
+    }
+  };
+}
+// pageName : nom de fichier de la page, lu dans son adresse. Sert uniquement à vérifier que le dossier
+// choisi est bien celui de la page, et à l'afficher (échappé).
+function pageName(){ try{ return decodeURIComponent(location.pathname.split('/').pop()||''); }catch(e){ return ''; } }
+
+/* --- État --- */
+// État de l'écran. Rien de cet état n'est partagé avec les autres postes, sauf data (image du fichier).
+const S={
+  mode:'booting', // booting | incompatible | home | reconnect | fs
+  data:null, store:null, dirHandle:null, folderName:'',
+  admin:!!LS.get('admin',false),
+  tab:'overview', // chaque ouverture commence sur la vue d'ensemble
+  employee:LS.get('employee',''),
+  year:null,       // année affichée ('2027'…), 'all' pour toute la période, null = année en cours par défaut
+  theme:(function(){ const t=LS.get('theme','auto'); return t==='light'||t==='dark'?t:'auto'; })(),
+  logStore:null,
+  preview:null,      // {assignments:{}, locks:{key:true}, mode:'adjust'|'complete'|'manual'}
+  status:{txt:'',type:''},
+  lastRead:null, computing:false, proposalInfo:''
+};
+// Nettoyage : une ancienne version mémorisait un identifiant de poste. Il n'est plus ni utilisé ni conservé.
+LS.del('poste'); // ancien identifiant de poste, plus utilisé
+// TABS : adminOnly = visible seulement quand l'interrupteur « Administration » est activé.
+const TABS=[
+  {id:'entry',name:'Mes indisponibilités',ico:'cal'},
+  {id:'overview',name:'Vue d’ensemble',ico:'grid'},
+  {id:'schedule',name:'Planning',ico:'list'},
+  {id:'employees',name:'Agents',ico:'users',adminOnly:true},
+  {id:'settings',name:'Réglages',ico:'gear',adminOnly:true}
+];
+// status : message de la ligne d'état. Écrit par textContent, donc sans interprétation HTML.
+function status(txt,type){ S.status={txt:txt,type:type||''}; const el=document.getElementById('status'); if(el){ el.textContent=txt; el.title=txt; el.className='status status-'+(type||''); } }
+
+/* --- Démarrage et connexion au dossier --- */
+// showError : signale un échec. Message dans la ligne d'état ; hors de l'écran principal, où cette ligne
+// n'existe pas, le message est aussi présenté dans une boîte de dialogue.
+function showError(msg,e){
+  const txt=msg+' ('+((e&&e.message)||e)+').';
+  console.warn(msg,e);
+  status(txt,'error');
+  if(S.mode!=='fs') alert(txt);
+}
+// boot : au chargement. Si un dossier est mémorisé et que l'accord d'Edge est toujours valide,
+// connexion directe ; s'il faut redonner l'accord, écran « reconnexion » ; sinon écran d'accueil.
+async function boot(){
+  if(!FS_OK){ S.mode='incompatible'; render(); return; }
+  try{
+    const d=await idbGet('folder');
+    if(d){
+      S.dirHandle=d; S.folderName=d.name;
+      if(await d.queryPermission({mode:'readwrite'})==='granted'){ await connect(d); return; }
+      S.mode='reconnect'; render(); return;
+    }
+  }catch(e){ console.warn(e); }
+  S.mode='home'; render();
+}
+// connect : crée le Store du fichier de données, fait la première lecture et mémorise le dossier.
+async function connect(dirHandle){
+  S.dirHandle=dirHandle; S.folderName=dirHandle.name; S.logStore=null;
+  S.store=new C.Store(fileIo(dirHandle,DATA_FILE),{
+    onRepair:function(view){ S.data=view; status('Saisie simultanée fusionnée, vérification en cours… Gardez la page ouverte.','info'); render(); },
+    // onIdle : toutes les saisies de ce poste sont écrites et revérifiées ; la page peut être fermée.
+    onIdle:function(b){
+      if(b.abandons) status('Une saisie n’a pas pu être enregistrée : le fichier est trop sollicité ou inaccessible. Rechargez et vérifiez vos dernières saisies.','error');
+      else status('Enregistré et vérifié à '+timeStr()+(b.merges?' (une saisie simultanée a été fusionnée)':''),'ok');
+    },
+    onLog:appendToLog
+  });
+  status('Lecture du fichier…','info');
+  S.data=await S.store.loadData();
+  S.lastRead=new Date().toISOString();
+  S.mode='fs';
+  idbSet('folder',dirHandle).catch(function(e){ console.warn('Impossible de mémoriser le dossier',e); });
+  status('Données chargées à '+timeStr(),'ok');
+  render();
+}
+/* Un seul bouton : on choisit le dossier partagé. Si le fichier de données existe, on l'ouvre ;
+   sinon (toute première fois) on propose de le créer. Rien n'est jamais écrasé. */
+// openFolder : ouvre le sélecteur de dossier d'Edge (c'est l'utilisateur qui choisit et qui accorde
+// l'écriture). Trois garde-fous : avertissement si la page n'est pas dans ce dossier ; refus d'ouvrir un
+// fichier de données illisible, sans rien écrire ; création d'un fichier neuf seulement s'il n'en existe
+// aucun et après confirmation.
+async function openFolder(){
+  try{
+    const dirHandle=await window.showDirectoryPicker({mode:'readwrite',id:'permanences'});
+    const page=pageName();
+    if(page){
+      let pageHere=true; try{ await dirHandle.getFileHandle(page); }catch(e){ pageHere=false; }
+      if(!pageHere && !confirm('Ce dossier ne contient pas la page « '+page+' ».\nLes données et le journal doivent être dans le même dossier que la page.\n\nUtiliser quand même ce dossier ?')) return;
+    }
+    let txt=null;
+    try{ txt=await (await (await dirHandle.getFileHandle(DATA_FILE)).getFile()).text(); }
+    catch(e){ if(!e||e.name!=='NotFoundError') throw e; }
+    if(txt!==null){
+      let valid=false; try{ C.normalize(JSON.parse(txt)); valid=true; }catch(e){}
+      if(!valid){ alert('Le fichier '+DATA_FILE+' de ce dossier est vide ou illisible.\nRien n’a été modifié. Vérifiez-le (ou restaurez une sauvegarde) avant de recommencer.'); return; }
+      await connect(dirHandle); return;
+    }
+    if(!confirm('Aucun fichier de données dans ce dossier.\n\nS’agit-il de la toute première mise en place ? Le fichier '+DATA_FILE+' va être créé ici (à faire une seule fois, par l’administration).')) return;
+    const init=C.newData();
+    C.applyOp(init,{type:'creation',id:uid(),at:new Date().toISOString(),author:'Administration'});
+    const entries=init.journal; init.journal=[];
+    await fileIo(dirHandle,DATA_FILE).write(C.serialize(init));
+    S.admin=true; LS.set('admin',true); S.tab='employees';
+    await connect(dirHandle);
+    appendToLog(entries);
+    status('Fichier créé. Commencez par ajouter les agents.','ok');
+  }catch(e){ if(e&&e.name==='AbortError') return; showError('Impossible d’ouvrir le dossier',e); }
+}
+// reconnect : redemande à Edge l'accord d'écriture sur le dossier mémorisé.
+async function reconnect(){
+  try{
+    const p=await S.dirHandle.requestPermission({mode:'readwrite'});
+    if(p==='granted') await connect(S.dirHandle);
+    else status('Accès refusé par le navigateur.','error');
+  }catch(e){ showError('Le dossier mémorisé est introuvable (déplacé, renommé ou partage indisponible). Ouvrez-le à nouveau',e); S.mode='home'; render(); }
+}
+// changeFolder : oublie le dossier mémorisé et revient à l'accueil. Ne supprime aucun fichier.
+async function changeFolder(){
+  try{ await idbDel('folder'); }catch(e){}
+  S.dirHandle=null; S.store=null; S.data=null; S.preview=null; S.logStore=null; S.mode='home'; status('','');
+  render();
+}
+
+/* --- Journal : fichier permanences.log dans le même dossier --- */
+// appendToLog : écrit les entrées dans permanences.log par un second Store (même protection contre
+// les écritures simultanées). Un échec est signalé dans la ligne d'état, sans bloquer la saisie.
+function appendToLog(entries){
+  if(!S.dirHandle||!entries||!entries.length) return;
+  if(!S.logStore) S.logStore=new C.Store(fileIo(S.dirHandle,C.LOG_FILE),{model:C.LOG_MODEL});
+  S.logStore.execute({type:'log',id:uid(),lines:entries.map(C.logLine)}).catch(function(e){ status('Le fichier '+C.LOG_FILE+' n’a pas pu être mis à jour ('+(e.message||e)+')','error'); });
+}
+
+let reloading=false;
+// reload : relit le fichier pour afficher les saisies des collègues. Appelé au retour sur la fenêtre,
+// au retour sur l'onglet, toutes les 30 secondes, et par le bouton « Recharger ».
+async function reload(manual){
+  if(S.mode!=='fs'||!S.store||reloading) return;
+  reloading=true;
+  try{
+    const d=await S.store.loadData();
+    S.lastRead=new Date().toISOString();
+    const change=C.serialize(d)!==C.serialize(S.data);
+    S.data=d;
+    if(manual) status('Données rechargées à '+timeStr(),'ok');
+    if(change||manual) render();
+  }catch(e){
+    if(e&&e.name==='NotAllowedError'){ S.mode='reconnect'; render(); }
+    else status('Lecture impossible ('+(e.message||e)+'). Vérifiez l’accès au dossier partagé.','error');
+  }finally{ reloading=false; }
+}
+window.addEventListener('focus',function(){ reload(false); });
+document.addEventListener('visibilitychange',function(){ if(!document.hidden) reload(false); });
+setInterval(function(){ if(!document.hidden) reload(false); },30000);
+
+/* --- Exécution d'une modification --- */
+// execute(op) : PASSAGE OBLIGÉ DE TOUTE MODIFICATION DE DONNÉES.
+//   Horodate l'opération, lui donne un identifiant et un rôle (« Administration » ou « Agent », selon
+//   l'interrupteur : ni nom de personne, ni nom de poste). L'applique à l'écran tout de suite, puis
+//   l'écrit par le Store. En cas d'échec d'écriture, le Store réessaie seul.
+//   Ligne d'état : « Enregistrement… », puis « vérification en cours », puis « Enregistré et vérifié »
+//   (voir onIdle dans connect) : ce dernier message indique que la page peut être fermée.
+async function execute(op){
+  op.at=op.at||new Date().toISOString();
+  op.id=op.id||uid();
+  op.author=S.admin?'Administration':'Agent'; // rôle seulement : ni nom, ni poste
+  C.applyOp(S.data,op); // affichage immédiat
+  status('Enregistrement…','info'); render();
+  try{
+    const shown=S.data;
+    S.data=await S.store.execute(op);
+    if(S.store.busy()) status('Enregistré, vérification… gardez la page ouverte','info');
+    // L'écran montre déjà la saisie : on ne le reconstruit que si le fichier apporte autre chose
+    // (saisie d'un collègue). Sinon un clic en cours sur un autre week-end pourrait être perdu.
+    if(sameContent(shown,S.data)) return;
+  }catch(e){
+    if(e&&e.name==='NotAllowedError'){ S.mode='reconnect'; render(); return; }
+    status('Enregistrement retardé ('+(e.message||e)+') : nouvel essai automatique dans quelques secondes.','error');
+    try{ S.data=await S.store.loadData(); }catch(_){}
+  }
+  render();
+}
+// sameContent : mêmes données affichées, sans tenir compte de l'heure d'écriture ni du journal.
+function sameContent(a,b){
+  // Clés triées : l'ordre des clés peut différer entre la copie locale et le fichier relu.
+  function key(d){ return JSON.stringify(d,function(k,v){
+    if(k==='majLe'||k==='journal') return undefined;
+    if(v&&typeof v==='object'&&!Array.isArray(v)){ const o={}; Object.keys(v).sort().forEach(function(x){ o[x]=v[x]; }); return o; }
+    return v;
+  }); }
+  return !!a&&!!b&&key(a)===key(b);
+}
+
+/* --- Téléchargement (sauvegarde JSON) --- */
+// downloadFile : sauvegarde. Fabrique un fichier en mémoire et le remet au navigateur, qui l'enregistre
+// sur le poste. Aucun envoi réseau. Le fichier sort alors du dossier partagé et de ses droits d'accès.
+function downloadFile(fullName,content,type){
+  const b=new Blob([content],{type:type}), u=URL.createObjectURL(b), a=document.createElement('a');
+  a.href=u; a.download=fullName; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){URL.revokeObjectURL(u);},2000);
+}
+/* --- Helpers d'affichage --- */
+// ICO : dessins vectoriels écrits en dur. Aucune donnée d'utilisateur, aucune image externe.
+const ICO={
+  cal:'<rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>',
+  user:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/>',
+  users:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3c2.1.7 3.5 2.6 3.5 5.7"/>',
+  grid:'<rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>',
+  list:'<path d="M9 6h12M9 12h12M9 18h12"/><path d="M3.5 6l1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  check:'<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  x:'<path d="M6 6l12 12M18 6L6 18"/>',
+  lock:'<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
+  refresh:'<path d="M20 11a8 8 0 0 0-14.6-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.6 4.5L20 16M20 20v-4h-4"/>',
+  download:'<path d="M12 3v12M7 10l5 5 5-5M4 20h16"/>',
+  print:'<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/>',
+  sparkle:'<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
+  wand:'<path d="M4 20L15 9"/><path d="M15 3v3M18.5 4.5l-2 2M21 9h-3M18.5 13.5l-2-2M12 4.5l1.5 1.5"/>',
+  edit:'<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+  file:'<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  trash:'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  alert:'<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4M12 17v.5"/>',
+  info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+  undo:'<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+  search:'<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  shield:'<path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/>',
+  left:'<path d="M15 5l-7 7 7 7"/>',
+  right:'<path d="M9 5l7 7-7 7"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+  moon:'<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  auto:'<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17z" fill="currentColor" stroke="none"/>'
+};
+function ico(n,cls){ return '<svg class="ico'+(cls?' '+cls:'')+'" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICO[n]||'')+'</svg>'; }
+// tint, initials, avatar, chip : pastille colorée d'un agent. La couleur est déduite du nom ; le nom
+// et les initiales sont échappés.
+function tint(n){ let h=0; n=String(n); for(let i=0;i<n.length;i++) h=(h*31+n.charCodeAt(i))%360; return h; }
+function initials(n){ const p=String(n).trim().split(/\s+/).map(function(w){return w.replace(/[^\p{L}]/gu,'');}).filter(Boolean); if(!p.length) return '?'; return ((p[0][0]||'')+(p.length>1?(p[p.length-1][0]||''):(p[0][1]||''))).toUpperCase(); }
+function avatar(n,cls){ return '<span class="avatar'+(cls?' '+cls:'')+'" style="--h:'+tint(n)+'" aria-hidden="true">'+esc(initials(n))+'</span>'; }
+function chip(n,cls,titleText){ return '<span class="chip'+(cls?' '+cls:'')+'"'+(titleText?' title="'+esc(titleText)+'"':'')+'>'+avatar(n)+'<span>'+esc(n)+'</span></span>'; }
+// button : produit un bouton portant data-action ; le clic est traité par la table actions.
+function button(action,icon,detail,style,opts){
+  opts=opts||{};
+  const calc=S.computing&&(action==='adjust'||action==='propose-full');
+  const off=opts.disabled||calc;
+  return '<button class="btn btn-'+style+(opts.small?' btn-small':'')+'" data-action="'+action+'"'+(opts.id?' data-id="'+esc(opts.id)+'"':'')+(opts.titre?' title="'+esc(opts.titre)+'"':'')+(off?' disabled':'')+'>'+ico(icon)+'<span>'+esc(calc&&S.computing===action?'Calcul en cours…':detail)+'</span></button>';
+}
+function kpi(caption,val,sub,tone){ return '<div class="kpi '+(tone||'')+'"><span class="kpi-l">'+esc(caption)+'</span><span class="kpi-v">'+esc(val)+'</span><span class="kpi-s">'+esc(sub)+'</span></div>'; }
+function empty(icon,titleText,detail){ return '<div class="card state-empty">'+ico(icon)+'<b>'+esc(titleText)+'</b><p class="help">'+esc(detail)+'</p></div>'; }
+// Raccourcis de lecture de l'état (weekends à sortedAgents). Aucune modification de données.
+function weekends(){ return C.periodWeekends(S.data.reglages); }
+function nameOf(id){ const s=C.findEmployee(S.data,id); return s?s.nom:''; }
+function byMonth(wes){ let g=[],cur=null; wes.forEach(function(w){ if(!cur||cur.month!==w.month){ cur={month:w.month,wes:[]}; g.push(cur); } cur.wes.push(w); }); return g; }
+function holidayTags(w){ return w.holidays.map(function(f){ return '<span class="tag tag-holiday" title="Jour férié">'+esc(f.name)+' · '+esc(C.shortDay(f.date))+'</span>'; }).join(' '); }
+function shownAsg(){ return S.preview?S.preview.assignments:S.data.planning.affectations; }
+function hasSchedule(){ const a=S.data.planning.affectations; return Object.keys(a).some(function(k){return a[k].some(Boolean);}); }
+function perWeekend(){ return Math.max(1,S.data.reglages.parWeekend|0); }
+// isUnavailable : indisponibilité déclarée, ou agent pas encore arrivé à cette date.
+function isUnavailable(id,key){ const s=C.findEmployee(S.data,id); return (!!s&&!C.isPresent(s,key)) || (S.data.indispos[id]||[]).indexOf(key)>=0; }
+function sortedAgents(){ return S.data.salaries.slice().sort(function(a,b){return a.nom.localeCompare(b.nom,'fr');}); }
+/* --- Années : la période peut couvrir plusieurs années ; on en affiche une à la fois (l'année en cours par défaut). --- */
+// years, shownYear, shownWeekends, scope, yearNav : affichage d'une année à la fois quand la période
+// en couvre plusieurs. Simple filtre d'affichage : le calcul de répartition porte toujours sur tout.
+function years(){ const seen={}, r=[]; weekends().forEach(function(w){ if(!seen[w.year]){ seen[w.year]=1; r.push(w.year); } }); return r; }
+function shownYear(){
+  const ys=years();
+  if(ys.length<2||S.year==='all') return null;            // une seule année, ou « toute la période »
+  if(S.year&&ys.indexOf(S.year)>=0) return S.year;
+  const a=C.today().slice(0,4);                          // par défaut : l'année en cours, sinon la plus proche
+  return ys.indexOf(a)>=0?a:(a<ys[0]?ys[0]:ys[ys.length-1]);
+}
+function shownWeekends(){ const a=shownYear(), w=weekends(); return a?w.filter(function(x){return x.year===a;}):w; }
+function scope(){ const a=shownYear(), R=S.data.reglages; return a?'Année '+a:'Du '+C.longDate(R.debut)+' au '+C.longDate(R.fin); }
+function yearNav(){
+  const ys=years(); if(ys.length<2) return '';
+  const a=shownYear(), i=a?ys.indexOf(a):-1;
+  let h='<div class="nav-year no-print" role="group" aria-label="Année affichée">'+
+    '<button class="btn btn-sec btn-small" data-action="year-nav" data-id="-1" title="Année précédente" aria-label="Année précédente"'+(i<=0?' disabled':'')+'>'+ico('left')+'</button>'+
+    '<select data-change="year" aria-label="Année affichée">';
+  ys.forEach(function(y){ h+='<option value="'+y+'"'+(y===a?' selected':'')+'>'+y+'</option>'; });
+  h+='<option value="all"'+(!a?' selected':'')+'>Toute la période</option></select>'+
+    '<button class="btn btn-sec btn-small" data-action="year-nav" data-id="1" title="Année suivante" aria-label="Année suivante"'+(i<0||i>=ys.length-1?' disabled':'')+'>'+ico('right')+'</button></div>';
+  return h;
+}
+// themePicker : les trois boutons de thème (automatique, clair, sombre).
+function themePicker(){
+  const opts=[['auto','auto','Thème automatique (comme Windows)'],['light','sun','Thème clair'],['dark','moon','Thème sombre']];
+  return '<span class="theme-choice no-print" role="group" aria-label="Thème">'+opts.map(function(o){
+    return '<button type="button" data-action="theme" data-id="'+o[0]+'" title="'+o[2]+'" aria-label="'+o[2]+'" aria-pressed="'+(S.theme===o[0])+'">'+ico(o[1])+'</button>';
+  }).join('')+'</span>';
+}
+
+/* --- Impression / PDF --- */
+// Impression et PDF : passent par la fenêtre d'impression du navigateur. Aucun fichier n'est créé par la page.
+function nowDate(){ return dateTimeStr(new Date().toISOString()); }
+function updatePrintDates(){ const t=nowDate(); document.querySelectorAll('.date-print').forEach(function(el){ el.textContent=t; }); }
+/* Le titre du document sert de nom de fichier proposé par « Enregistrer au format PDF ». */
+function printWithTitle(titleText,before,after){
+  let previous=document.title, done=false;
+  function endDate(){ if(done) return; done=true; window.removeEventListener('afterprint',endDate); document.title=previous; if(after) after(); }
+  if(before) before();
+  document.title=titleText+' - '+C.today();
+  window.addEventListener('afterprint',endDate);
+  window.print(); // Edge émet afterprint à la fermeture de la fenêtre d'impression
+}
+function printPage(){
+  const names={overview:'Vue d’ensemble',planning:'Planning'};
+  updatePrintDates();
+  printWithTitle((names[S.tab]||'Permanences')+' - '+S.data.reglages.titre+(shownYear()?' - '+shownYear():''));
+}
+/* Fiche « Mes indisponibilités » d'un agent, une page A4 par agent, avec la date de l'export. */
+// agentSheet : contenu HTML de la fiche d'un agent. Les noms et libellés sont échappés.
+function agentSheet(s,wes,at){
+  wes=wes.filter(function(w){ return C.isPresent(s,w.key); }); // week-ends depuis l'arrivée de l'agent
+  const unav={}; (S.data.indispos[s.id]||[]).forEach(function(c){unav[c]=1;});
+  let asg=S.data.planning.affectations, todayIso=C.today(), unavCount=0, dutyCount=0, month='';
+  byMonth(wes).forEach(function(g){
+    month+='<div class="sheet-month"><h3>'+esc(C.monthLabel(g.month))+'</h3><ul>';
+    g.wes.forEach(function(w){
+      const i=!!unav[w.key], p=(asg[w.key]||[]).indexOf(s.id)>=0, wd=weekendDays(w);
+      if(i) unavCount++; if(p) dutyCount++;
+      month+='<li class="'+(i?'unav':'free')+(w.key<=todayIso?' past':'')+'"><span class="sheet-days">'+esc(wd.days)+(wd.month.indexOf('–')>=0?' <small>'+esc(wd.month)+'</small>':'')+'</span>'+
+        '<span class="sheet-state">'+(i?'Indisponible':'Disponible')+'</span>'+(p?'<span class="sheet-duty">Permanence</span>':'')+
+        (w.holidays.length?'<span class="sheet-holidays">'+esc(w.holidays.map(function(f){return f.name+' ('+C.shortDay(f.date)+')';}).join(', '))+'</span>':'')+'</li>';
+    });
+    month+='</ul></div>';
+  });
+  return '<section class="sheet">'+
+    '<header class="sheet-head"><div><div class="sheet-kicker">'+esc(S.data.reglages.titre)+'</div><h1>'+esc(s.nom)+'</h1><div class="sheet-scope">Indisponibilités · '+esc(scope())+'</div></div>'+
+    '<div class="sheet-date">Exporté le<b>'+esc(at)+'</b></div></header>'+
+    '<div class="sheet-stats"><span><b>'+unavCount+'</b>indisponible'+(unavCount>1?'s':'')+'</span><span><b>'+(wes.length-unavCount)+'</b>disponible'+(wes.length-unavCount>1?'s':'')+'</span><span><b>'+dutyCount+'</b>permanence'+(dutyCount>1?'s':'')+'</span></div>'+
+    '<div class="sheet-legend"><span><i style="background:#fde4e1;border-left:3pt solid #c42b1c"></i>Indisponible</span><span><i style="background:#e6f4ec;border-left:3pt solid #107c41"></i>Disponible</span><span><i style="background:#0f6cbd"></i>De permanence</span><span style="color:#6f3aa6">Violet : jour férié</span></div>'+
+    '<div class="sheet-grid">'+month+'</div>'+
+    '<footer class="sheet-foot"><span>'+esc(s.nom)+' · '+esc(scope())+'</span><span>Exporté le '+esc(at)+'</span></footer></section>';
+}
+// fillSheets et clearSheets : la zone d'impression n'est remplie que le temps de l'impression.
+function fillSheets(agents){
+  const wes=shownWeekends(), at=nowDate();
+  document.getElementById('print-area').innerHTML=agents.map(function(s){ return agentSheet(s,wes,at); }).join('');
+  document.body.classList.add('print-zone');
+}
+function clearSheets(){ document.body.classList.remove('print-zone'); document.getElementById('print-area').innerHTML=''; }
+function printSheets(agents,titleText){
+  if(!agents.length) return;
+  printWithTitle(titleText+(shownYear()?' - '+shownYear():''),function(){ fillSheets(agents); },clearSheets);
+}
+/* Ctrl+P depuis « Mes indisponibilités » imprime aussi la fiche de l'agent choisi. */
+let autoSheet=false;
+window.addEventListener('beforeprint',function(){
+  updatePrintDates();
+  if(document.body.classList.contains('print-zone')||S.mode!=='fs'||S.tab!=='entry') return;
+  const s=C.findEmployee(S.data,S.employee); if(!s) return;
+  fillSheets([s]); autoSheet=true;
+});
+window.addEventListener('afterprint',function(){ if(autoSheet){ autoSheet=false; clearSheets(); } });
+
+// weekendDays : libellé court d'un week-end (« 2–3 », « janv. »).
+function weekendDays(w){
+  const a=C.parseISO(w.key), b=C.parseISO(w.sunday), m=['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
+  if(a.getUTCMonth()===b.getUTCMonth()) return {days:a.getUTCDate()+'–'+b.getUTCDate(),month:m[a.getUTCMonth()]};
+  return {days:a.getUTCDate()+'–'+b.getUTCDate(),month:m[a.getUTCMonth()]+' – '+m[b.getUTCMonth()]};
+}
+
+/* --- Rendu --- */
+// render : reconstruit tout l'écran depuis l'état S. Préserve ce qui est en cours de frappe
+// (champs marqués data-keep) et le champ actif.
+function render(){
+  // Conserver ce que l'utilisateur est en train de taper
+  const guard={}, active=document.activeElement, focus=active&&active.id;
+  // Bouton de week-end actif : on le retrouve après reconstruction grâce à data-we.
+  const focusWe=active&&active.dataset&&active.dataset.action==='toggle'?active.dataset.we:null;
+  const sx=window.scrollX, sy=window.scrollY;
+  document.querySelectorAll('[data-keep]').forEach(function(el){ if(el.value!==el.defaultValue) guard[el.id]=el.value; });
+  app.innerHTML=view();
+  Object.keys(guard).forEach(function(id){ const el=document.getElementById(id); if(el) el.value=guard[id]; });
+  if(focus){ const f=document.getElementById(focus); if(f&&f.focus&&f.tagName!=='BUTTON'){ f.focus({preventScroll:true}); if(f.type==='text'&&f.setSelectionRange){ const n=f.value.length; f.setSelectionRange(n,n); } } }
+  if(focusWe){ const t=app.querySelector('[data-action="toggle"][data-we="'+focusWe+'"]'); if(t) t.focus({preventScroll:true}); }
+  // Tout l'écran est reconstruit : on remet la page exactement où elle était.
+  if(window.scrollX!==sx||window.scrollY!==sy) window.scrollTo(sx,sy);
+  if(S.data) document.title=S.data.reglages.titre;
+}
+// view : aiguillage. Écrans de connexion, ou barre de titre + ligne d'état + onglets + onglet courant.
+// Un onglet réservé à l'administration est remplacé par « Mes indisponibilités » si l'interrupteur est coupé.
+function view(){
+  if(S.mode==='booting') return '<div class="home"><p class="help" style="text-align:center">Chargement…</p></div>';
+  if(S.mode==='incompatible') return incompatibleView();
+  if(S.mode==='home') return homeView();
+  if(S.mode==='reconnect') return reconnectView();
+  if(!S.admin && TABS.some(function(o){return o.id===S.tab&&o.adminOnly;})) S.tab='entry';
+  const R=S.data.reglages, wes=weekends();
+  let h='<header class="bar"><div class="bar-inner">'+
+    '<div class="brand"><span class="logo">'+ico('cal')+'</span><div style="min-width:0"><h1>'+esc(R.titre)+'</h1>'+
+    '<div class="sub-title">'+esc(C.longDate(R.debut))+' – '+esc(C.longDate(R.fin))+'</div></div></div>'+
+    '<div class="bar-right no-print">'+
+      '<label class="switch" title="Affiche les fonctions de gestion (agents, réglages, planning)"><input type="checkbox" data-change="admin"'+(S.admin?' checked':'')+'><span class="track"></span><span>Administration</span></label>'+themePicker()+
+    '</div></div></header>';
+  h+='<div class="container">';
+  h+='<div class="state no-print"><span class="state-file" title="Données et journal sont dans ce dossier">'+ico('folder')+'<b>'+esc(S.folderName)+'</b><span>›</span>'+ico('file')+'<b>'+DATA_FILE+'</b></span>'+
+    '<span id="status" class="status status-'+S.status.type+'" title="'+esc(S.status.txt)+'">'+esc(S.status.txt)+'</span>'+
+    '<span class="state-links"><button class="link" data-action="reload">'+ico('refresh')+'Recharger</button><button class="link" data-action="change-file">'+ico('folder')+'Changer de dossier</button></span></div>';
+  h+='<nav class="tabs no-print" aria-label="Sections"><div class="tabs-inner">';
+  let sepDone=false;
+  TABS.forEach(function(o){
+    if(o.adminOnly&&!S.admin) return;
+    if(o.adminOnly&&!sepDone){ h+='<span class="sep" aria-hidden="true"></span>'; sepDone=true; }
+    h+='<button data-action="tab" data-id="'+o.id+'"'+(S.tab===o.id?' aria-current="page"':'')+'>'+ico(o.ico)+'<span>'+esc(o.name)+'</span>'+(o.id==='schedule'&&S.preview?'<span class="tag tag-warn">aperçu</span>':'')+'</button>';
+  });
+  h+='</div></nav>';
+  h+='<div class="print-only print-meta"><span>'+esc(scope())+'</span><span>Édité le <span class="date-print">'+esc(dateTimeStr(new Date().toISOString()))+'</span></span></div>';
+  h+='<main'+(S.tab==='overview'?' class="landscape"':'')+'>';
+  if(!wes.length) h+='<div class="banner error">'+ico('alert')+'<div>La période définie dans les réglages ne contient aucun week-end complet.</div></div>';
+  switch(S.tab){
+    case 'overview': h+=overviewView(); break;
+    case 'schedule': h+=scheduleView(); break;
+    case 'employees': h+=agentsView(); break;
+    case 'settings': h+=settingsView(); break;
+    default: h+=entryView();
+  }
+  h+='</main></div>';
+  return h;
+}
+// homeHeader : « texte » est inséré TEL QUEL. Les trois appelants ne lui passent que du texte fixe et
+// des valeurs échappées. À préserver en cas de modification.
+function homeHeader(detail){
+  return '<div class="home-head"><div class="logo">'+ico('cal')+'</div><h1>Permanences du week-end</h1><p>'+detail+'</p></div>';
+}
+// Écrans de connexion : accueil, reconnexion, navigateur incompatible.
+function homeView(){
+  const page=pageName()||'permanences.html';
+  return '<div class="home"><div class="home-theme">'+themePicker()+'</div>'+homeHeader('Les données (<code>'+DATA_FILE+'</code>) et le journal des modifications (<code>permanences.log</code>) sont enregistrés dans le <b>même dossier partagé</b> que cette page.')+
+    '<div class="choice single"><div class="card"><span class="choice-ico">'+ico('folder')+'</span><h2>Ouvrir le dossier des permanences</h2>'+
+    '<p class="help">Sélectionnez le dossier partagé qui contient <code>'+esc(page)+'</code>, puis autorisez la modification.</p>'+
+    '<p class="tip">'+ico('info')+'<span>À la visite suivante, Edge proposera <b>« Autoriser à chaque visite »</b> : choisissez-le et vous n’aurez plus rien à faire.</span></p>'+
+    '<p class="tip">'+ico('shield')+'<span>Toute première utilisation : si le dossier ne contient pas encore de données, l’outil propose de créer le fichier. Un fichier existant n’est jamais écrasé.</span></p>'+
+    button('open','folder','Choisir le dossier…','pri')+'</div></div></div>';
+}
+function reconnectView(){
+  return '<div class="home">'+homeHeader('Edge demande votre accord pour modifier le dossier <code>'+esc(S.folderName)+'</code>.')+
+    '<div class="card" style="max-width:560px;margin:0 auto"><p class="tip" style="margin:0 0 16px">'+ico('info')+'<span>Dans la fenêtre d’Edge, choisissez <b>« Autoriser à chaque visite »</b> : cet écran ne s’affichera plus.</span></p>'+
+    '<div class="actions" style="justify-content:center;margin:0">'+button('reconnect','shield','Autoriser l’accès au fichier','pri')+button('open','folder','Choisir un autre dossier…','sec')+'</div>'+
+    (S.status.type==='error'?'<p class="status status-error" style="justify-content:center;margin-top:12px">'+esc(S.status.txt)+'</p>':'')+'</div></div>';
+}
+function incompatibleView(){
+  return '<div class="home">'+homeHeader('Cet outil enregistre directement dans le dossier partagé.')+
+    '<div class="banner error" style="max-width:620px;margin:0 auto">'+ico('alert')+'<div><b>Ouvrez cette page avec Microsoft Edge.</b><br>Ce navigateur ne permet pas d’enregistrer dans le dossier partagé. Faites un clic droit sur <code>permanences.html</code> puis « Ouvrir avec » → « Microsoft Edge ».</div></div></div>';
+}
+
+// entryView : onglet « Mes indisponibilités ». L'agent se désigne lui-même dans la liste : il n'y a pas
+// de vérification d'identité, donc rien n'empêche de saisir pour un collègue. Les week-ends passés sont
+// désactivés.
+function entryView(){
+  const emps=S.data.salaries;
+  if(!emps.length) return empty('users','Aucun agent enregistré',S.admin?'Ajoutez-les dans l’onglet « Agents ».':'L’administration doit d’abord ajouter les agents.');
+  const selected=C.findEmployee(S.data,S.employee);
+  let h='<section class="card hero"><div><label class="lbl" for="choice-employee">Je suis</label><select id="choice-employee" data-change="employee"><option value="">— Choisissez votre nom —</option>';
+  sortedAgents().forEach(function(s){ h+='<option value="'+esc(s.id)+'"'+(selected&&selected.id===s.id?' selected':'')+'>'+esc(s.nom)+'</option>'; });
+  h+='</select>';
+  if(!selected){
+    h+='<p class="help" style="margin-top:.6rem">Choisissez votre nom pour indiquer les week-ends où vous n’êtes pas disponible.</p></div></section>';
+    return h;
+  }
+  // Seuls les week-ends postérieurs à l'arrivée de l'agent lui sont proposés.
+  const wes=shownWeekends().filter(function(w){ return C.isPresent(selected,w.key); }), todayIso=C.today(), unav={}; (S.data.indispos[selected.id]||[]).forEach(function(c){unav[c]=1;});
+  const count=wes.filter(function(w){return unav[w.key];}).length;
+  const asg=S.data.planning.affectations, dutyCount=wes.filter(function(w){return (asg[w.key]||[]).indexOf(selected.id)>=0;}).length;
+  h+='<p class="help" style="margin-top:.6rem">Touchez un week-end pour le marquer <b>indisponible</b>, touchez-le à nouveau pour annuler. Chaque clic est enregistré immédiatement.</p></div>';
+  h+='<div class="stats"><div class="stat danger"><span class="stat-v">'+count+'</span><span class="stat-l">indisponible'+(count>1?'s':'')+'</span></div>'+
+     '<div class="stat ok"><span class="stat-v">'+(wes.length-count)+'</span><span class="stat-l">disponible'+(wes.length-count>1?'s':'')+'</span></div>'+
+     '<div class="stat accent"><span class="stat-v">'+dutyCount+'</span><span class="stat-l">permanence'+(dutyCount>1?'s':'')+'</span></div></div></section>';
+  h+='<div class="bar-tools no-print">'+(yearNav()||'<span></span>')+'<div class="tools">'+
+     button('export-sheet','download','Exporter la fiche (PDF)','sec',{titre:'Ouvre l’impression : choisissez « Enregistrer au format PDF »',disabled:!wes.length})+'</div></div>';
+  byMonth(wes).forEach(function(g){
+    h+='<section><h3>'+esc(C.monthLabel(g.month))+'</h3><div class="grid-we">';
+    g.wes.forEach(function(w){
+      const i=!!unav[w.key], p=(asg[w.key]||[]).indexOf(selected.id)>=0, past=w.key<=todayIso, wd=weekendDays(w);
+      h+='<button class="tile" data-action="toggle" data-we="'+w.key+'" aria-pressed="'+i+'" aria-label="'+esc(w.label)+' : '+(i?'indisponible':'disponible')+'"'+(past?' disabled title="Week-end passé"':'')+'>'+
+        '<span class="tile-top"><span><span class="tile-days">'+esc(wd.days)+'</span><span class="tile-month">'+esc(wd.month)+'</span></span><span class="tile-state">'+ico(i?'x':'check')+'</span></span>'+
+        '<span class="tile-label">'+(i?'Indisponible':'Disponible')+'</span>'+
+        '<span class="tile-tags">'+(past?'<span class="tag tag-grey">passé</span>':'')+holidayTags(w)+(p?'<span class="tag '+(i?'tag-danger':'tag-accent')+'">'+(i?'De permanence malgré tout':'De permanence')+'</span>':'')+'</span></button>';
+    });
+    h+='</div></section>';
+  });
+  return h;
+}
+
+// overviewView : tableau agents x week-ends. Lecture seule.
+function overviewView(){
+  const emps=S.data.salaries, wes=shownWeekends(), asg=shownAsg(), perWk=perWeekend();
+  if(!emps.length) return empty('users','Aucun agent enregistré','Les indisponibilités apparaîtront ici.');
+  let unfilledCount=0, bodyHtml='';
+  byMonth(wes).forEach(function(g){
+    bodyHtml+='<tr class="month-row"><th colspan="'+(emps.length+2)+'">'+esc(C.monthLabel(g.month))+'</th></tr>';
+    g.wes.forEach(function(w){
+      let a=asg[w.key]||[], freeN=0, cells='';
+      emps.forEach(function(s){
+        const unav=isUnavailable(s.id,w.key), p=a.indexOf(s.id)>=0;
+        if(!unav) freeN++;
+        cells+='<td class="mark">'+(unav&&p?'<span class="pt pt-conflict" title="'+esc(s.nom)+' : de permanence mais indisponible">!</span>':
+               unav?'<span class="pt pt-unavailable" title="'+esc(s.nom)+' : indisponible">'+ico('x')+'</span>':
+               p?'<span class="pt pt-duty" title="'+esc(s.nom)+' : de permanence">P</span>':'<span class="pt pt-free" title="'+esc(s.nom)+' : disponible"></span>')+'</td>';
+      });
+      const unfilled=freeN<perWk; if(unfilled) unfilledCount++;
+      bodyHtml+='<tr class="'+(unfilled?'unfilled':'')+'"><td class="col-we"><div class="we-cell"><span class="we-label">'+esc(w.label)+'</span>'+(w.holidays.length?'<span class="tag tag-holiday" title="'+esc(w.holidays.map(function(f){return f.name+' ('+C.shortDay(f.date)+')';}).join(', '))+'">férié</span>':'')+'</div></td>'+cells+
+        '<td class="num"><span class="avail-badge'+(unfilled?' unfilled':'')+'">'+freeN+'</span></td></tr>';
+    });
+  });
+  let h='<div class="head-section"><div><h2>Vue d’ensemble</h2><p class="help">Indisponibilités et permanences de tous les agents'+(S.preview?' (permanences de l’aperçu non enregistré)':'')+'.</p></div>'+
+    '<div class="tools no-print">'+yearNav()+button('print','print','Imprimer / PDF','subtle')+'</div></div>';
+  h+=unfilledCount?'<div class="banner error">'+ico('alert')+'<div><b>'+plural(unfilledCount,'week-end')+'</b> avec moins de '+plural(perWk,'agent')+' disponible'+(perWk>1?'s':'')+' (repérés par un trait rouge).</div></div>':
+             '<div class="banner info">'+ico('check')+'<div>Chaque week-end a au moins '+plural(perWk,'agent')+' disponible'+(perWk>1?'s':'')+'.</div></div>';
+  h+='<div class="card"><div class="legend"><span><span class="pt pt-unavailable">'+ico('x')+'</span>indisponible</span><span><span class="pt pt-duty">P</span>de permanence</span><span><span class="pt pt-conflict">!</span>de permanence mais indisponible</span><span><span class="avail-badge">5</span>agents disponibles</span></div>';
+  h+='<div class="scroll"><table class="view-overview"><thead><tr><th class="col-we">Week-end</th>';
+  emps.forEach(function(s){ h+='<th class="col-emp" title="'+esc(s.nom)+'">'+esc(s.nom)+'</th>'; });
+  h+='<th class="num">Dispo.</th></tr></thead><tbody>'+bodyHtml+'</tbody></table></div></div>';
+  return h;
+}
+
+// scheduleView : planning enregistré, ou aperçu en cours (S.preview). Indicateurs, tableau, alertes,
+// charge par agent. Les listes de modification n'apparaissent qu'avec l'interrupteur « Administration »
+// ET un aperçu ouvert.
+function scheduleView(){
+  const R=S.data.reglages, wes=shownWeekends(), year=shownYear(), editing=S.admin&&!!S.preview, asg=shownAsg(), perWk=perWeekend(), todayIso=C.today();
+  const summary=C.analyze(S.data,asg,{today:todayIso,year:year}), emps=sortedAgents();
+  const saved=S.data.planning.affectations, savedExists=hasSchedule();
+  const exists=Object.keys(asg).some(function(c){return (asg[c]||[]).some(Boolean);});
+  let modified={}, modCount=0;
+  function asgKey(a){ return (a||[]).filter(Boolean).slice().sort().join(); }
+  if(S.preview) wes.forEach(function(w){ if(asgKey(asg[w.key])!==asgKey(saved[w.key])){ modified[w.key]=true; modCount++; } });
+  const savedSummary=S.preview&&savedExists?C.analyze(S.data,saved,{today:todayIso,year:year}):null;
+
+  let h='<div class="head-section"><div><h2>Planning des permanences</h2><p class="help">'+
+    (S.preview?'Aperçu non enregistré':S.data.planning.enregistreLe?'Enregistré le '+esc(dateTimeStr(S.data.planning.enregistreLe)):'Aucun planning enregistré pour l’instant')+'</p></div>'+
+    '<div class="tools no-print">'+yearNav()+button('print','print','Imprimer / PDF','subtle')+'</div></div>';
+
+  if(exists||S.preview){
+    const longCount=wes.filter(function(w){return w.extended;}).length;
+    h+='<div class="kpis">'+
+      kpi('Écart de charge',inDays(summary.gap),savedSummary&&savedSummary.gap!==summary.gap?'avant : '+inDays(savedSummary.gap):'entre le plus et le moins sollicité',summary.gap<=2?'ok':summary.gap<=4?'warn':'danger')+
+      kpi('Postes pourvus',summary.filled+' / '+summary.posts,summary.filled<summary.posts?(summary.posts-summary.filled)+' à pourvoir':'tous pourvus',summary.filled<summary.posts?'danger':'ok')+
+      kpi('Alertes',String(summary.alerts.length),summary.alerts.length?'détail sous le tableau':'aucune',summary.alerts.length?'warn':'ok')+
+      (S.preview&&savedExists?kpi('Week-ends modifiés',String(modCount),'par rapport au planning enregistré','accent'):kpi('Week-ends prolongés',String(longCount),'3 jours au lieu de 2',''))+
+    '</div>';
+  }
+  if(S.preview){
+    h+='<div class="banner caution screen">'+ico('info')+'<div><b>Aperçu non enregistré</b>, visible uniquement par vous. '+esc(S.proposalInfo||'')+
+      ' Les lignes marquées « modifié » diffèrent du planning enregistré. Une modification à la main verrouille le week-end. Les week-ends passés ne sont jamais modifiés par une proposition.</div></div>';
+  }
+  if(S.admin){
+    h+='<div class="actions no-print">';
+    const noAgent=!S.data.salaries.length;
+    if(S.preview){
+      h+=button('save-schedule','check','Enregistrer le planning','pri');
+      if(savedExists) h+=button('adjust','wand','Relancer l’ajustement','sec',{titre:'Repart du planning enregistré et ne change que le nécessaire'});
+      h+=button('propose-full','sparkle','Nouvelle proposition complète','sec')+button('discard','x','Abandonner','danger');
+    }else if(savedExists){
+      h+=button('adjust','wand','Ajuster le planning','pri',{disabled:noAgent,titre:'Garde le planning actuel et ne change que le nécessaire'})+
+         button('propose-full','sparkle','Nouvelle proposition complète','sec',{disabled:noAgent})+
+         button('edit','edit','Modifier à la main','sec',{disabled:noAgent})+button('clear-schedule','trash','Effacer','danger');
+    }else{
+      h+=button('propose-full','sparkle','Proposer une répartition','pri',{disabled:noAgent})+button('edit','edit','Modifier à la main','sec',{disabled:noAgent});
+    }
+    h+='</div>';
+    if(!S.preview&&savedExists) h+='<p class="help no-print" style="margin:-4px 0 14px">« Ajuster » garde le planning enregistré et ne change que le nécessaire : agents devenus indisponibles, postes vides, réduction de l’écart de charge (un nouvel agent prend sa part à compter de son arrivée). « Nouvelle proposition complète » recalcule tous les week-ends à venir non verrouillés.</p>';
+  }else if(!exists){
+    h+=empty('list','Aucun planning pour l’instant','L’administration le publiera ici.');
+    return h;
+  }
+
+  // Tableau du planning
+  let colCount=perWk; wes.forEach(function(w){ colCount=Math.max(colCount,(asg[w.key]||[]).length); });
+  h+='<div class="card" style="padding:0;overflow:hidden"><div class="scroll" style="border:0;border-radius:0"><table class="schedule"><thead><tr><th>Week-end</th><th>Férié</th><th>'+(colCount>1?'Agents de permanence':'Agent de permanence')+'</th><th class="num" title="Agents disponibles">Dispo.</th>'+(editing?'<th class="center no-print" title="Verrouillé : conservé par une nouvelle proposition">'+ico('lock')+'</th>':'')+'</tr></thead><tbody>';
+  byMonth(wes).forEach(function(g){
+    h+='<tr class="month-row"><th colspan="'+(editing?5:4)+'">'+esc(C.monthLabel(g.month))+'</th></tr>';
+    g.wes.forEach(function(w){
+      const a=asg[w.key]||[], past=w.key<=todayIso, isLocked=editing&&(past||!!S.preview.locks[w.key]), mine=S.employee&&a.indexOf(S.employee)>=0, isMod=!!modified[w.key];
+      let cell='';
+      if(editing){
+        for(let s=0;s<colCount;s++){
+          const cur=a[s]||'';
+          cell+='<select data-change="assign" data-we="'+w.key+'" data-slot="'+s+'" aria-label="Permanence '+esc(w.label)+'"><option value="">— non pourvu —</option>';
+          emps.forEach(function(p){ cell+='<option value="'+esc(p.id)+'"'+(cur===p.id?' selected':'')+'>'+esc(p.nom)+(isUnavailable(p.id,w.key)?' (indisponible)':'')+'</option>'; });
+          cell+='</select> ';
+        }
+      }else{
+        const chips=a.filter(Boolean).map(function(id){ const n=nameOf(id); if(!n) return ''; return isUnavailable(id,w.key)&&!past?chip(n+' ⚠','alert','Indisponible ce week-end'):chip(n); }).filter(Boolean);
+        cell=chips.length?'<div class="chips">'+chips.join('')+'</div>':'<span class="help">—</span>';
+      }
+      if(isMod){
+        const prevNames=(saved[w.key]||[]).filter(Boolean).map(nameOf).filter(Boolean);
+        cell+='<div class="previous">avant : '+(prevNames.length?'<s>'+esc(prevNames.join(', '))+'</s>':'non pourvu')+'</div>';
+      }
+      const freeN=summary.freeList[w.key];
+      h+='<tr class="'+(past?'past ':'')+(isMod?'modified ':'')+(mine?'mine ':'')+(freeN<perWk&&!past?'unfilled':'')+'">'+
+        '<td><div class="we-cell"><span class="we-label">'+esc(w.label)+'</span>'+(past?'<span class="tag tag-grey">passé</span>':'')+(isMod?'<span class="tag tag-accent">modifié</span>':'')+'</div></td>'+
+        '<td>'+holidayTags(w)+(w.extended?' <span class="tag tag-grey" title="Jours de permanence de ce week-end (2 pour un week-end ordinaire)">'+w.days+' jours</span>':'')+'</td><td>'+cell+'</td><td class="num avail"><span class="avail-badge">'+freeN+'</span></td>'+
+        (editing?'<td class="center no-print"><label class="lock-cb" title="'+(past?'Week-end passé : jamais modifié par une proposition':'Verrouiller : conservé par une nouvelle proposition')+'"><input type="checkbox" data-change="lock" data-we="'+w.key+'"'+(isLocked?' checked':'')+(past?' disabled':'')+' aria-label="Verrouiller '+esc(w.label)+'"></label></td>':'')+'</tr>';
+    });
+  });
+  h+='</tbody></table></div></div>';
+  if(S.employee&&C.findEmployee(S.data,S.employee)) h+='<p class="help no-print" style="margin:-6px 0 16px">Les lignes surlignées sont les permanences de '+esc(nameOf(S.employee))+'.</p>';
+
+  // Alertes
+  if(exists){
+    h+='<div class="card alerts-card"><h2>Alertes'+(year?' · '+year:'')+'</h2>';
+    if(!summary.alerts.length) h+='<p class="ok-row">'+ico('check')+'Aucune alerte : tous les postes à venir sont pourvus, sans agent indisponible ni week-ends consécutifs.</p>';
+    else{
+      h+='<ul class="alerts">'; summary.alerts.forEach(function(x){ h+='<li class="'+x.type+'">'+ico('alert')+'<span>'+esc(x.msg)+'</span></li>'; }); h+='</ul>';
+      if(!R.eviterConsecutifs && summary.alerts.some(function(x){return x.type==='consecutive';})) h+='<p class="help">L’option « éviter les week-ends consécutifs » est désactivée dans les réglages.</p>';
+    }
+    h+='</div>';
+  }
+
+  // Charge
+  h+='<div class="card load-card"><h2>Charge par agent · '+esc(year?year:'toute la période')+'</h2>';
+  if(!summary.stats.length) h+='<p class="help">Aucun agent.</p>';
+  else{
+    const mx=Math.max(summary.max,summary.goalMax,0.0001);
+    h+='<div class="scroll"><table class="load"><thead><tr><th>Agent</th><th class="col-bar">Charge en jours <span style="text-transform:none;letter-spacing:0;font-weight:500">(trait = charge attendue)</span></th><th class="num" title="Jours de permanence effectués ou prévus">Effectué</th><th class="num" title="Nombre de jours que l’agent devrait faire pour une répartition équitable, compte tenu de sa date d’arrivée">Attendu</th><th class="num" title="Effectué moins attendu : positif = au-dessus de ce qui est attendu, négatif = en dessous">Écart</th><th class="num">Week-ends</th><th class="num">dont fériés</th><th class="num">Indispo.</th></tr></thead><tbody>';
+    summary.stats.slice().sort(function(a,b){return b.workload-a.workload||a.name.localeCompare(b.name,'fr');}).forEach(function(s){
+      const cls=exists&&summary.gap>0?(s.gap>=summary.gapMax-1e-9?'max':s.gap<=summary.gapMin+1e-9?'min':''):'';
+      h+='<tr><td>'+chip(s.name)+'</td><td class="col-bar"><div class="bar-load"><span class="filled '+cls+'" style="width:'+(s.workload/mx*100).toFixed(1)+'%"></span><span class="average" style="left:'+(s.goal/mx*100).toFixed(1)+'%"></span></div></td>'+
+        '<td class="num"><b>'+C.frNumber(s.workload)+'</b></td><td class="num">'+C.frNumber(s.goal)+'</td><td class="num">'+signedDays(s.gap)+'</td><td class="num">'+s.count+'</td><td class="num">'+s.holidayCount+'</td><td class="num">'+s.unavailableCount+'</td></tr>';
+    });
+    h+='</tbody></table></div>';
+    h+='<p class="help" style="margin-top:.8rem"><b>Effectué</b> : jours de permanence de l’agent. <b>Attendu</b> : ce qu’il devrait faire pour une répartition équitable ; présent toute la période, c’est la moyenne ; arrivé en cours de période, seuls les week-ends après son arrivée comptent. <b>Écart</b> : effectué moins attendu.<br>Écart entre le plus et le moins sollicité : <b>'+inDays(summary.gap)+'</b>. Un week-end compte 2 jours, 3 s’il est prolongé par un férié le vendredi ou le lundi. Rouge : le plus sollicité ; vert : le moins sollicité.'+
+      (year?' <span class="no-print">La répartition automatique équilibre la charge sur toute la période ; choisissez « Toute la période » pour voir le cumul.</span>':'')+'</p>';
+  }
+  h+='</div>';
+  return h;
+}
+
+// agentsView : ajout, renommage, date d'arrivée, retrait d'agents. Onglet réservé à l'administration (filtre d'affichage).
+function agentsView(){
+  const emps=S.data.salaries;
+  let h='<div class="head-section"><div><h2>Agents</h2><p class="help">'+plural(emps.length,'agent')+' enregistré'+(emps.length>1?'s':'')+'.</p></div></div>';
+  h+='<div class="card"><h2>Ajouter des agents</h2><label class="field"><span class="help" style="font-weight:400">Un nom par ligne, ou plusieurs noms séparés par des virgules.</span>'+
+    '<textarea id="add-names" data-keep placeholder="Exemple :&#10;Camille Martin&#10;Julien Petit, Sarah Benali"></textarea></label>'+
+    '<div class="actions" style="margin:0">'+button('add','plus','Ajouter','pri')+'</div></div>';
+  h+='<div class="card"><h2>Liste des agents</h2>';
+  if(!emps.length) h+='<p class="help">Aucun agent pour l’instant.</p>';
+  else{
+    h+='<ul class="list-agents">';
+    emps.forEach(function(s){
+      const count=(S.data.indispos[s.id]||[]).length;
+      h+='<li>'+avatar(s.nom,'large')+'<input type="text" id="name-'+esc(s.id)+'" data-keep value="'+esc(s.nom)+'" aria-label="Nom de '+esc(s.nom)+'">'+
+        '<label class="help" style="display:flex;align-items:center;gap:.35rem" title="Laisser vide si l’agent est présent depuis le début de la période">Arrivée<input type="date" id="since-'+esc(s.id)+'" data-keep value="'+esc(s.depuis||'')+'" style="flex:0 0 9.5rem;width:9.5rem"></label>'+
+        '<span class="count">'+plural(count,'indisponibilité')+'</span>'+
+        button('rename','check','Enregistrer','sec',{small:true,id:s.id})+button('remove','trash','Retirer','danger',{small:true,id:s.id})+'</li>';
+    });
+    h+='</ul><p class="help" style="margin-top:.8rem"><b>Arrivée</b> : l’agent n’est jamais affecté avant cette date, et sa charge attendue est réduite d’autant ; laisser vide s’il est présent depuis le début.</p><p class="help">Retirer un agent supprime aussi ses indisponibilités et libère ses permanences. Le détail est conservé dans le fichier <code>permanences.log</code>.</p>';
+  }
+  return h+'</div>';
+}
+
+// settingsView : réglages communs à tous les postes, et sauvegarde.
+function settingsView(){
+  const R=S.data.reglages;
+  return '<div class="head-section"><div><h2>Réglages</h2><p class="help">Ces réglages s’appliquent à tout le monde.</p></div></div>'+
+    '<div class="card"><div class="grid-fields">'+
+    '<label class="field" style="grid-column:1/-1"><span>Titre de la page</span><input type="text" id="setting-title" data-keep value="'+esc(R.titre)+'" style="width:100%"></label>'+
+    '<label class="field"><span>Début de la période</span><input type="date" id="setting-start" data-keep value="'+esc(R.debut)+'"></label>'+
+    '<label class="field"><span>Fin de la période</span><input type="date" id="setting-end" data-keep value="'+esc(R.fin)+'"></label>'+
+    '<label class="field"><span>Agents par week-end</span><input type="number" id="setting-per-weekend" data-keep min="1" max="10" step="1" value="'+R.parWeekend+'"></label>'+
+    '</div><div class="row-switch"><label class="switch"><input type="checkbox" id="setting-consecutive"'+(R.eviterConsecutifs?' checked':'')+'><span class="track"></span><span>Éviter qu’un même agent soit de permanence deux week-ends d’affilée</span></label></div>'+
+    '<p class="help">Un week-end compte <b>2 jours</b> de permanence. Un férié le <b>vendredi ou le lundi</b> ajoute un jour : le week-end compte alors <b>3 jours</b>. Un férié qui tombe le samedi ou le dimanche n’ajoute rien. Pâques, l’Ascension et la Pentecôte sont calculées automatiquement.</p>'+
+    '<p class="help">La période peut couvrir plusieurs années (20 ans au plus). Les écrans affichent alors une année à la fois, l’année en cours par défaut, avec des flèches pour passer à l’année précédente ou suivante.</p>'+
+    '<div class="actions" style="margin:12px 0 0">'+button('save-settings','check','Enregistrer les réglages','pri')+'</div></div>'+
+    '<div class="card"><h2>Journal et sauvegarde</h2><p class="help">Chaque modification est ajoutée au fichier <code>'+C.LOG_FILE+'</code>, dans le même dossier que cette page (date, rôle « Administration » ou « Agent », détail). Il s’ouvre avec le Bloc-notes.</p>'+
+    '<div class="actions" style="margin:12px 0 0">'+button('backup','download','Télécharger une sauvegarde des données','sec')+'</div></div>';
+}
+
+/* --- Propositions --- */
+// runProposal : lance Core.propose (mode 'complete' ou 'adjust') et place le résultat dans
+// S.preview. RIEN N'EST ÉCRIT dans le fichier à ce stade. Le calcul est différé de 30 ms pour laisser
+// l'écran afficher « Calcul en cours… » ; il occupe ensuite la page 1,2 s environ (3,6 s au plus).
+function runProposal(mode){
+  if(S.computing) return;
+  const saved=S.data.planning.affectations, todayIso=C.today();
+  const base=S.preview?S.preview.assignments:saved;
+  let locks={};
+  if(S.preview) locks=S.preview.locks; else S.data.planning.verrous.forEach(function(c){locks[c]=true;});
+  const before=C.analyze(S.data,saved,{today:todayIso});
+  S.computing=mode; render();
+  setTimeout(function(){
+    try{
+      const o={base:base,locks:Object.keys(locks).filter(function(c){return locks[c];}),durationMs:1200,today:todayIso};
+      // Ajuster : le planning enregistré sert de référence, chaque changement est pénalisé.
+      if(mode==='adjust') o.reference=saved;
+      const r=C.propose(S.data,o), after=C.analyze(S.data,r.assignments,{today:todayIso});
+      S.preview={assignments:r.assignments,locks:locks,mode:mode};
+      S.proposalInfo=mode==='adjust'
+        ?'Ajustement : '+plural(r.changes,'week-end')+' modifié'+(r.changes>1?'s':'')+', écart de charge '+inDays(before.gap)+' → '+inDays(after.gap)+'.'
+        :'Proposition complète ('+r.attempts+' essais) : écart de charge '+inDays(after.gap)+'.';
+      S.tab='schedule';
+    }catch(e){ showError('Le calcul a échoué',e); }
+    S.computing=false; render();
+  },30);
+}
+
+/* --- Actions --- */
+// actions : table des clics. La clé est la valeur de l'attribut data-action du bouton.
+// Seules les actions suivantes modifient le fichier, toujours par execute() : toggle, add,
+// rename (nom, arrivée), remove, save-settings, save-schedule, clear-schedule.
+const actions={
+  'tab':function(b){ S.tab=b.dataset.id; render(); window.scrollTo(0,0); },
+  'open':openFolder,
+  'reconnect':reconnect,
+  'change-file':changeFolder,
+  'reload':function(){ reload(true); },
+  // toggle : pose ou retire une indisponibilité pour l'agent choisi dans la liste (S.employee).
+  // Pas de contrôle d'identité ; le journal en garde la trace avec le rôle, sans nom d'auteur.
+  'toggle':function(b){
+    const we=b.dataset.we, id=S.employee; if(!C.findEmployee(S.data,id)) return;
+    const val=(S.data.indispos[id]||[]).indexOf(we)<0;
+    execute({type:'unavailable',employee:id,we:we,val:val});
+  },
+  'add':function(){
+    const ta=document.getElementById('add-names'), names=C.splitNames(ta.value);
+    if(!names.length){ ta.focus(); return; }
+    const existing={}; S.data.salaries.forEach(function(s){existing[C.nameKey(s.nom)]=1;});
+    const added=names.filter(function(n){return !existing[C.nameKey(n)];}), duplicates=names.length-added.length;
+    ta.value='';
+    if(duplicates) alert(plural(duplicates,'nom')+' déjà présent'+(duplicates>1?'s':'')+' : ignoré'+(duplicates>1?'s':'')+'.');
+    if(added.length) execute({type:'addEmployees',employees:added.map(function(n){return {id:uid(),name:n};})});
+  },
+  'rename':function(b){
+    const id=b.dataset.id, el=document.getElementById('name-'+id), fullName=el.value.trim().replace(/\s+/g,' ');
+    if(!fullName){ alert('Le nom ne peut pas être vide.'); return; }
+    if(S.data.salaries.some(function(s){return s.id!==id&&C.nameKey(s.nom)===C.nameKey(fullName);})){ alert('Ce nom est déjà utilisé.'); return; }
+    // Date d'arrivée : contrôlée ici, puis de nouveau par Core.applyOp et Core.normalize.
+    const elSince=document.getElementById('since-'+id), since=elSince.value||'';
+    if(since&&!C.isValidIso(since)){ alert('La date d’arrivée est invalide.'); return; }
+    const s=C.findEmployee(S.data,id); if(!s) return;
+    const nameChanged=s.nom!==fullName, profileChanged=(s.depuis||'')!==since;
+    el.value=fullName; el.defaultValue=fullName; elSince.defaultValue=since;
+    if(nameChanged) execute({type:'rename',employee:id,name:fullName});
+    if(profileChanged) execute({type:'profile',employee:id,since:since});
+  },
+  'remove':function(b){
+    const id=b.dataset.id;
+    if(!confirm('Retirer '+nameOf(id)+' ?\nSes indisponibilités seront supprimées et ses permanences libérées.\nLe détail (dates d’indisponibilité, permanences) est conservé dans le fichier permanences.log.')) return;
+    if(S.preview) Object.keys(S.preview.assignments).forEach(function(c){ S.preview.assignments[c]=S.preview.assignments[c].map(function(x){return x===id?'':x;}); });
+    execute({type:'remove',employee:id});
+  },
+  // save-settings : CONTRÔLE DES SAISIES avant écriture. Dates valides et ordonnées, 1 à 10 agents
+  // par week-end, 20 ans au plus.
+  'save-settings':function(){
+    const v={
+      titre:document.getElementById('setting-title').value.trim()||'Permanences du week-end',
+      debut:document.getElementById('setting-start').value,
+      fin:document.getElementById('setting-end').value,
+      parWeekend:parseInt(document.getElementById('setting-per-weekend').value,10),
+      eviterConsecutifs:document.getElementById('setting-consecutive').checked
+    };
+    if(!C.isValidIso(v.debut)||!C.isValidIso(v.fin)||v.debut>v.fin){ alert('Les dates de période sont invalides (la fin doit être après le début).'); return; }
+    if(!(v.parWeekend>=1&&v.parWeekend<=10)){ alert('Le nombre d’agents par week-end doit être compris entre 1 et 10.'); return; }
+    if(Number(v.fin.slice(0,4))-Number(v.debut.slice(0,4))>20){ alert('La période ne peut pas dépasser 20 ans.'); return; }
+    document.querySelectorAll('[data-keep]').forEach(function(el){ el.defaultValue=el.value; });
+    execute({type:'settings',values:v});
+  },
+  'propose-full':function(){ runProposal('complete'); },
+  'adjust':function(){ runProposal('adjust'); },
+  'edit':function(){
+    const v={}; S.data.planning.verrous.forEach(function(c){v[c]=true;});
+    S.preview={assignments:C.clone(S.data.planning.affectations),locks:v,mode:'manual'}; S.proposalInfo=''; render();
+  },
+  'discard':function(){ if(confirm('Abandonner l’aperçu ? Les modifications non enregistrées seront perdues.')){ S.preview=null; render(); } },
+  // save-schedule : publie l'aperçu pour tous les postes. Demande confirmation s'il contient un agent
+  // indisponible ou un doublon.
+  'save-schedule':function(){
+    const asg={}, a=S.preview.assignments;
+    weekends().forEach(function(w){ asg[w.key]=(a[w.key]||[]).filter(Boolean); });
+    const summary=C.analyze(S.data,asg,{today:C.today()}), severe=summary.alerts.filter(function(x){return x.type==='unavailable'||x.type==='duplicate';});
+    if(severe.length&&!confirm('Attention :\n- '+severe.map(function(x){return x.msg;}).join('\n- ')+'\n\nEnregistrer quand même ?')) return;
+    const locks=Object.keys(S.preview.locks).filter(function(c){return S.preview.locks[c];});
+    S.preview=null;
+    execute({type:'schedule',assignments:asg,locks:locks});
+  },
+  'clear-schedule':function(){ if(confirm('Effacer le planning enregistré pour tout le monde ?')) execute({type:'clearSchedule'}); },
+  'print':function(){ printPage(); },
+  'export-sheet':function(){
+    const s=C.findEmployee(S.data,S.employee); if(!s) return;
+    printSheets([s],'Indisponibilités - '+s.nom);
+  },
+  'year-nav':function(b){
+    const ys=years(), i=ys.indexOf(shownYear())+Number(b.dataset.id);
+    if(i>=0&&i<ys.length){ S.year=ys[i]; render(); }
+  },
+  'theme':function(b){
+    S.theme=b.dataset.id; LS.set('theme',S.theme);
+    if(S.theme==='auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme',S.theme);
+    render();
+  },
+  'backup':function(){ const n=new Date(), t=n.toISOString().slice(0,10)+'_'+String(n.getHours()).padStart(2,'0')+String(n.getMinutes()).padStart(2,'0'); downloadFile('sauvegarde-permanences_'+t+'.json',C.serialize(S.data),'application/json'); },
+
+};
+// changes : table des événements « change » (cases, listes). Clé = attribut data-change.
+// Aucune n'écrit dans le fichier : admin, year et employee changent l'affichage du poste ;
+// assign et lock modifient l'aperçu local.
+const changes={
+  // admin : interrupteur « Administration ». Sans mot de passe : il n'ouvre aucun droit, il affiche
+  // des onglets et des boutons. Son seul effet sur les données est le rôle inscrit dans le journal.
+  'admin':function(el){
+    S.admin=el.checked; LS.set('admin',S.admin);
+    render();
+  },
+  'year':function(el){ S.year=el.value; render(); },
+  'employee':function(el){
+    S.employee=el.value; LS.set('employee',S.employee);
+    render();
+  },
+  'assign':function(el){
+    const we=el.dataset.we, s=+el.dataset.slot, a=(S.preview.assignments[we]||[]).slice();
+    while(a.length<=s) a.push('');
+    if(el.value&&a.indexOf(el.value)>=0&&a.indexOf(el.value)!==s){ alert('Cet agent est déjà affecté à ce week-end.'); render(); return; }
+    a[s]=el.value; S.preview.assignments[we]=a; S.preview.locks[we]=true; render();
+  },
+  'lock':function(el){ S.preview.locks[el.dataset.we]=el.checked; render(); }
+};
+// Délégation d'événements : un seul écouteur par type. Une action inconnue ou un bouton désactivé est ignoré.
+document.addEventListener('click',function(e){
+  const b=e.target.closest('[data-action]'); if(!b||b.disabled) return;
+  const f=actions[b.dataset.action]; if(f){ e.preventDefault(); f(b,e); }
+});
+document.addEventListener('change',function(e){
+  const el=e.target.closest('[data-change]'); if(!el) return;
+  const f=changes[el.dataset.change]; if(f) f(el,e);
+});
+// Avertit avant de quitter la page si un aperçu n'est pas enregistré, ou si une saisie n'est pas encore
+// écrite et revérifiée dans le fichier de données ou le journal (Store.busy). Edge affiche son propre
+// message « Quitter le site ? » : le texte ne peut pas être personnalisé.
+window.addEventListener('beforeunload',function(e){
+  const busy=(S.store&&S.store.busy())||(S.logStore&&S.logStore.busy());
+  if(S.preview||busy){ e.preventDefault(); e.returnValue=''; }
+});
+
+// Point de départ.
+boot();
+})();
+</script>
+</body>
+</html>

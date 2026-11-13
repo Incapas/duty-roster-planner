@@ -1,0 +1,9 @@
+# Fichiers système macOS
+.DS_Store
+
+# Données créées par la page dans le dossier partagé : elles contiennent des données personnelles
+permanences-donnees.json
+permanences.log
+
+# Sauvegardes téléchargées depuis Réglages
+sauvegarde-permanences_*.json
