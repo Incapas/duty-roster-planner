@@ -211,7 +211,7 @@ Le résultat est d'abord un **aperçu**, visible sur le seul poste qui l'a calcu
 | HTML, CSS et JavaScript | La page entière, dans un seul fichier, sans bibliothèque ni étape de compilation |
 | [File System Access](https://developer.mozilla.org/fr/docs/Web/API/File_System_API) | Lecture et écriture dans le dossier partagé, après accord de l'utilisateur |
 | [Content-Security-Policy](https://developer.mozilla.org/fr/docs/Web/HTTP/Guides/CSP) | Interdiction de toute connexion réseau et de toute ressource externe |
-| IndexedDB et localStorage | Mémorisation du dossier choisi et des préférences d'affichage du poste |
+| IndexedDB et localStorage | Mémorisation du dossier choisi et du thème d'affichage du poste |
 
 ## Installation
 
@@ -222,11 +222,7 @@ Prérequis : Microsoft Edge sous Windows, et un dossier partagé accessible en �
 3. Accepter la création de `permanences-donnees.json`. Cette étape n'a lieu qu'une fois.
 4. Ajouter les agents, régler la période, puis proposer un planning.
 
-Pour récupérer le dépôt complet :
-
-```bash
-git clone https://github.com/Incapas/duty-roster-planner.git
-```
+Pour récupérer le dépôt complet : sur la page du dépôt, cliquer sur le bouton « Code », puis sur « Download ZIP », et extraire l'archive téléchargée.
 
 ## Utilisation
 
@@ -377,7 +373,7 @@ Pour restaurer une sauvegarde, la replacer dans le dossier sous le nom `permanen
 
 À l'origine de l'idée et des règles métier : permanences de week-end réparties équitablement, prise en compte des indisponibilités et des week-ends prolongés.
 
-### Réalisateur — [@Incapas](https://github.com/Incapas)
+### Développeur / réalisateur
 
 Réalisation et mise à disposition de l'outil à partir du besoin exprimé :
 

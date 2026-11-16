@@ -38,7 +38,7 @@
 <!--   ni balise chargeant une ressource (img, iframe, link, script src). -->
 <!--  -->
 <!-- STOCKAGE SUR LE POSTE -->
-<!--   IndexedDB : le lien vers le dossier. localStorage : trois préférences d'affichage. -->
+<!--   IndexedDB : le lien vers le dossier. localStorage : une préférence d'affichage (thème). -->
 <!--   Aucune donnée de planning n'est conservée sur le poste. -->
 <!--  -->
 <!-- POINTS DE CONTRÔLE -->
@@ -315,7 +315,6 @@ tr.unfilled td.col-we{box-shadow:inset 3px 0 0 var(--danger),1px 0 0 var(--borde
 .schedule tr.past td{color:var(--muted)}
 .schedule tr.past .chip{opacity:.7}
 .schedule tr.modified td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
-.schedule tr.mine td{background:var(--accent-soft)}
 .schedule tr.unfilled td.avail .avail-badge{background:var(--danger);color:var(--surface)}
 .previous{font-size:.8rem;color:var(--muted);margin-top:3px}
 .previous s{opacity:.85}
@@ -442,7 +441,6 @@ tr.unfilled td.col-we{box-shadow:inset 3px 0 0 var(--danger),1px 0 0 var(--borde
   tr{break-inside:avoid}
   tr.month-row th{background:#eef4fb;color:#0f6cbd;padding:3pt 5pt;border-top:1px solid #c9ced8;font-size:8pt;break-after:avoid}
   tbody tr:hover td{background:none}
-  .schedule tr.mine td{background:none}
   .schedule tr.past td{color:#4a5160}
   .schedule tr.modified td:first-child{box-shadow:none}
   .schedule select{border:0;appearance:none;-webkit-appearance:none;padding:0;background:none;min-width:0;font-weight:550}
@@ -1316,13 +1314,15 @@ const DATA_FILE='permanences-donnees.json';
 // un attribut entre guillemets. C'est la barrière contre l'injection de code par un nom d'agent, un titre
 // ou un fichier de données modifié à la main.
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
-// LS : accès à localStorage, préfixe « permanences. ». Clés : admin, employee, theme.
+// LS : accès à localStorage, préfixe « permanences. ». Clé : theme.
+// Les anciennes clés admin et employee ne sont plus utilisées : elles sont effacées au démarrage.
 // Préférences d'affichage du poste, sans donnée de planning. Toute erreur de stockage est ignorée.
 const LS={
   get:function(k,d){ try{ const v=localStorage.getItem('permanences.'+k); return v==null?d:JSON.parse(v); }catch(e){ return d; } },
   set:function(k,v){ try{ localStorage.setItem('permanences.'+k,JSON.stringify(v)); }catch(e){} },
   del:function(k){ try{ localStorage.removeItem('permanences.'+k); }catch(e){} }
 };
+LS.del('admin'); LS.del('employee');
 // uid : identifiant d'agent ou d'opération (horloge + hasard). Sert à distinguer, pas à protéger :
 // il n'est ni secret ni imprévisible.
 function uid(){ return 's'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
@@ -1374,9 +1374,9 @@ function pageName(){ try{ return decodeURIComponent(location.pathname.split('/')
 const S={
   mode:'booting', // booting | incompatible | home | reconnect | fs
   data:null, store:null, dirHandle:null, folderName:'',
-  admin:!!LS.get('admin',false),
+  admin:true,      // chaque ouverture commence avec « Administration » cochée
   tab:'overview', // chaque ouverture commence sur la vue d'ensemble
-  employee:LS.get('employee',''),
+  employee:'',     // chaque ouverture commence sans agent choisi dans « Mes indisponibilités »
   year:null,       // année affichée ('2027'…), 'all' pour toute la période, null = année en cours par défaut
   theme:(function(){ const t=LS.get('theme','auto'); return t==='light'||t==='dark'?t:'auto'; })(),
   logStore:null,
@@ -1467,7 +1467,7 @@ async function openFolder(){
     C.applyOp(init,{type:'creation',id:uid(),at:new Date().toISOString(),author:'Administration'});
     const entries=init.journal; init.journal=[];
     await fileIo(dirHandle,DATA_FILE).write(C.serialize(init));
-    S.admin=true; LS.set('admin',true); S.tab='employees';
+    S.admin=true; S.tab='employees';
     await connect(dirHandle);
     appendToLog(entries);
     status('Fichier créé. Commencez par ajouter les agents.','ok');
@@ -1940,7 +1940,7 @@ function scheduleView(){
   byMonth(wes).forEach(function(g){
     h+='<tr class="month-row"><th colspan="'+(editing?5:4)+'">'+esc(C.monthLabel(g.month))+'</th></tr>';
     g.wes.forEach(function(w){
-      const a=asg[w.key]||[], past=w.key<=todayIso, isLocked=editing&&(past||!!S.preview.locks[w.key]), mine=S.employee&&a.indexOf(S.employee)>=0, isMod=!!modified[w.key];
+      const a=asg[w.key]||[], past=w.key<=todayIso, isLocked=editing&&(past||!!S.preview.locks[w.key]), isMod=!!modified[w.key];
       let cell='';
       if(editing){
         for(let s=0;s<colCount;s++){
@@ -1958,14 +1958,13 @@ function scheduleView(){
         cell+='<div class="previous">avant : '+(prevNames.length?'<s>'+esc(prevNames.join(', '))+'</s>':'non pourvu')+'</div>';
       }
       const freeN=summary.freeList[w.key];
-      h+='<tr class="'+(past?'past ':'')+(isMod?'modified ':'')+(mine?'mine ':'')+(freeN<perWk&&!past?'unfilled':'')+'">'+
+      h+='<tr class="'+(past?'past ':'')+(isMod?'modified ':'')+(freeN<perWk&&!past?'unfilled':'')+'">'+
         '<td><div class="we-cell"><span class="we-label">'+esc(w.label)+'</span>'+(past?'<span class="tag tag-grey">passé</span>':'')+(isMod?'<span class="tag tag-accent">modifié</span>':'')+'</div></td>'+
         '<td>'+holidayTags(w)+(w.extended?' <span class="tag tag-grey" title="Jours de permanence de ce week-end (2 pour un week-end ordinaire)">'+w.days+' jours</span>':'')+'</td><td>'+cell+'</td><td class="num avail"><span class="avail-badge">'+freeN+'</span></td>'+
         (editing?'<td class="center no-print"><label class="lock-cb" title="'+(past?'Week-end passé : jamais modifié par une proposition':'Verrouiller : conservé par une nouvelle proposition')+'"><input type="checkbox" data-change="lock" data-we="'+w.key+'"'+(isLocked?' checked':'')+(past?' disabled':'')+' aria-label="Verrouiller '+esc(w.label)+'"></label></td>':'')+'</tr>';
     });
   });
   h+='</tbody></table></div></div>';
-  if(S.employee&&C.findEmployee(S.data,S.employee)) h+='<p class="help no-print" style="margin:-6px 0 16px">Les lignes surlignées sont les permanences de '+esc(nameOf(S.employee))+'.</p>';
 
   // Alertes
   if(exists){
@@ -2169,12 +2168,12 @@ const changes={
   // admin : interrupteur « Administration ». Sans mot de passe : il n'ouvre aucun droit, il affiche
   // des onglets et des boutons. Son seul effet sur les données est le rôle inscrit dans le journal.
   'admin':function(el){
-    S.admin=el.checked; LS.set('admin',S.admin);
+    S.admin=el.checked;
     render();
   },
   'year':function(el){ S.year=el.value; render(); },
   'employee':function(el){
-    S.employee=el.value; LS.set('employee',S.employee);
+    S.employee=el.value;
     render();
   },
   'assign':function(el){
