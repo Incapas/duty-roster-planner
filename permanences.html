@@ -1069,8 +1069,17 @@ const Core = (function(){
     const base=o.base||{};
     // Un week-end passé (samedi <= aujourd'hui) n'est jamais modifié par une proposition.
     const todayIso=o.today||'';
-    // Figé = verrouillé par l'administration, ou passé.
-    const locked=wes.map(function(w){return !!locks[w.key] || (!!todayIso && w.key<=todayIso);});
+    const past=wes.map(function(w){return !!todayIso && w.key<=todayIso;});
+    const baseIdx=wes.map(function(w){ return (base[w.key]||[]).filter(function(id){return id in idx;}).map(function(id){return idx[id];}); });
+    // Week-end verrouillé (à venir) contenant un agent devenu indisponible : le verrou ne peut pas être
+    // respecté tel quel. On garde les agents disponibles (pinned[i], jamais déplacés) et on remplace les autres.
+    const pinned=wes.map(function(w,i){
+      if(past[i]||!locks[w.key]) return null;
+      const b=baseIdx[i];
+      return b.every(function(e){return avail[i][e];}) ? null : b.filter(function(e){return avail[i][e];});
+    });
+    // Figé = verrouillé par l'administration (sans agent indisponible), ou passé.
+    const locked=wes.map(function(w,i){return past[i] || (!!locks[w.key] && !pinned[i]);});
     const res={assignments:{}, attempts:0, cost:0, changes:0};
     if(!W) return res;
     // Aucun agent : seuls les week-ends figés gardent leur contenu.
@@ -1079,10 +1088,8 @@ const Core = (function(){
     // pour ne modifier que le nécessaire. La réduction de l'écart de charge reste prioritaire.
     const refAsg=o.reference||null, changeCost=refAsg?(o.changeWeight==null?2:o.changeWeight):0;
     const ref=wes.map(function(w){ return ((refAsg&&refAsg[w.key])||[]).filter(function(id){return id in idx;}).map(function(id){return idx[id];}); });
-    const fixed=wes.map(function(w,i){
-      if(!locked[i]) return null;
-      return (base[w.key]||[]).filter(function(id){return id in idx;}).map(function(id){return idx[id];});
-    });
+    const fixed=wes.map(function(w,i){ return locked[i]?baseIdx[i]:null; });
+    function isPinned(i,e){ return !!pinned[i] && pinned[i].indexOf(e)>=0; }
 
     // Sur une période de plusieurs années, une amélioration peut être longue : on la borne dans le temps.
     const t0=Date.now();
@@ -1134,8 +1141,9 @@ const Core = (function(){
     function build(initial,dropRate){
       const A=wes.map(function(w,i){
         if(locked[i]) return fixed[i].slice();
-        if(!initial||(dropRate&&rng()<dropRate)) return [];
-        const a=[]; initial[i].forEach(function(e){ if(avail[i][e]&&a.indexOf(e)<0&&a.length<k) a.push(e); });
+        const a=pinned[i]?pinned[i].slice():[];
+        if(!initial||(dropRate&&rng()<dropRate)) return a;
+        initial[i].forEach(function(e){ if(avail[i][e]&&a.indexOf(e)<0&&a.length<k) a.push(e); });
         return a;
       });
       const load=new Array(E).fill(0);
@@ -1174,7 +1182,7 @@ const Core = (function(){
         ok=false; passes++;
         // Remplacements : une personne affectée est remplacée par une autre disponible.
         for(i=0;i<W;i++){ if(locked[i]) continue; if(tooLong()) return c; a=A[i];
-          for(s=0;s<a.length;s++){ previous=a[s];
+          for(s=0;s<a.length;s++){ previous=a[s]; if(isPinned(i,previous)) continue;
             for(e=0;e<E;e++){
               if(e===previous||!avail[i][e]||a.indexOf(e)>=0) continue;
               a[s]=e; n=cost(A);
@@ -1187,7 +1195,7 @@ const Core = (function(){
           for(j=i+1;j<W;j++){ if(locked[j]) continue; a=A[i]; b=A[j];
             for(s=0;s<a.length;s++) for(t=0;t<b.length;t++){
               x=a[s]; y=b[t];
-              if(x===y||!avail[j][x]||!avail[i][y]||b.indexOf(x)>=0||a.indexOf(y)>=0) continue;
+              if(x===y||isPinned(i,x)||isPinned(j,y)||!avail[j][x]||!avail[i][y]||b.indexOf(x)>=0||a.indexOf(y)>=0) continue;
               a[s]=y; b[t]=x; n=cost(A);
               if(n<c-1e-9){c=n;ok=true;} else {a[s]=x;b[t]=y;}
             }
